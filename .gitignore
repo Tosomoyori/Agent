@@ -15,6 +15,21 @@ dist/
 venv/
 env/
 
+# 测试 / 工具缓存
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 运行时产物
+traces/
+*.db
+*.sqlite3
+checkpoints/
+
+# 评测报告
+eval_reports/
+
 # 编辑器 / 系统
 .idea/
 .DS_Store

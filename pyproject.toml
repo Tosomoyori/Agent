@@ -1,5 +1,49 @@
 [project]
-name = "agent1"
+name = "agentkit"
 version = "0.1.0"
-requires-python = ">=3.14"
-dependencies = []
+description = "从零实现的 Agent 开发框架：原生 tool calling、内容块消息模型、可观测事件流与服务化"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.40",
+    "python-dotenv>=1.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+agentkit = "agentkit.app.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentkit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live: 需要真实调用 LLM 的测试（默认跳过，用 -m live 显式运行）",
+]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# legacy/ 是改造前的原始实现，刻意保持原样作为 before/after 对照，不参与 lint。
+extend-exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

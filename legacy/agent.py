@@ -4,16 +4,16 @@ import argparse
 import ast
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
-import platform
 from dotenv import load_dotenv
 from openai import OpenAI
-
 from prompt_template import SYSTEM_PROMPT
 
 # ============================================================
@@ -40,10 +40,10 @@ WORKSPACE = ""  # 将在 main() 中初始化
 class ToolRegistry:
     """工具注册中心，使用装饰器注册工具函数"""
 
-    _tools: Dict[str, Callable] = {}
+    _tools: dict[str, Callable] = {}
 
     @classmethod
-    def register(cls, name: Optional[str] = None):
+    def register(cls, name: str | None = None):
         """装饰器：将函数注册为 Agent 可调用的工具"""
         def decorator(func: Callable) -> Callable:
             tool_name = name or func.__name__
@@ -52,11 +52,11 @@ class ToolRegistry:
         return decorator
 
     @classmethod
-    def get(cls, name: str) -> Optional[Callable]:
+    def get(cls, name: str) -> Callable | None:
         return cls._tools.get(name)
 
     @classmethod
-    def all(cls) -> Dict[str, Callable]:
+    def all(cls) -> dict[str, Callable]:
         return dict(cls._tools)
 
     @classmethod
@@ -107,12 +107,12 @@ def read_file(file_path: str) -> str:
     if not os.path.isfile(full):
         return f"❌ 文件不存在: {full}"
     try:
-        with open(full, "r", encoding="utf-8") as f:
+        with open(full, encoding="utf-8") as f:
             content = f.read()
         line_count = content.count("\n") + (0 if content.endswith("\n") else 1)
         return f"📄 {full}（{line_count} 行）\n{content}"
     except UnicodeDecodeError:
-        return f"❌ 非 UTF-8 编码文件，无法读取"
+        return "❌ 非 UTF-8 编码文件，无法读取"
     except Exception as e:
         return f"❌ 读取失败: {e}"
 
@@ -164,7 +164,7 @@ def search_in_file(file_path: str, keyword: str) -> str:
     if not os.path.isfile(full):
         return f"❌ 文件不存在: {full}"
     try:
-        with open(full, "r", encoding="utf-8") as f:
+        with open(full, encoding="utf-8") as f:
             lines = f.readlines()
         matches = []
         for i, line in enumerate(lines, 1):
@@ -217,20 +217,20 @@ class ReActStep:
     """记录单次推理步骤"""
     step_num: int
     thought: str
-    action: Optional[Dict[str, Any]] = None
-    observation: Optional[str] = None
-    final_answer: Optional[str] = None
+    action: dict[str, Any] | None = None
+    observation: str | None = None
+    final_answer: str | None = None
 
 @dataclass
 class ReActSession:
     """完整的 ReAct 会话状态"""
     system_prompt: str
     user_question: str
-    steps: List[ReActStep] = field(default_factory=list)
+    steps: list[ReActStep] = field(default_factory=list)
 
-    def to_messages(self) -> List[Dict[str, str]]:
+    def to_messages(self) -> list[dict[str, str]]:
         """转换为 LLM API 需要的 messages 格式"""
-        messages: List[Dict[str, str]] = [
+        messages: list[dict[str, str]] = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": f"用户问题：{self.user_question}"},
         ]
@@ -261,8 +261,8 @@ class ReActEngine:
     def __init__(
         self,
         model: str = "deepseek-chat",
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         max_steps: int = MAX_STEPS,
         workspace: str = "",
     ):
@@ -286,7 +286,7 @@ class ReActEngine:
         )
 
         print(f"\n{'='*60}")
-        print(f"🤖 ReAct Agent 启动")
+        print("🤖 ReAct Agent 启动")
         print(f"📌 问题: {question}")
         print(f"📂 工作区: {self.workspace}")
         print(f"🧠 模型: {self.model}")
@@ -372,7 +372,7 @@ class ReActEngine:
             dir_contents=dir_contents,
         )
 
-    def _call_llm(self, messages: List[Dict[str, str]]) -> str:
+    def _call_llm(self, messages: list[dict[str, str]]) -> str:
         print("   🧠 正在推理...")
         response = self.client.chat.completions.create(
             model=self.model,
@@ -382,7 +382,7 @@ class ReActEngine:
         return response.choices[0].message.content
 
     @staticmethod
-    def _parse_llm_response(raw: str) -> Dict[str, Any]:
+    def _parse_llm_response(raw: str) -> dict[str, Any]:
         """
         解析 LLM 返回的 JSON。
         容错：支持 ```json ... ``` 代码块包裹，或直接的 JSON 对象。
@@ -416,7 +416,7 @@ class ReActEngine:
             p = step.action.get("params", {})
             print(f"   🔧 行动: {t}({p})")
         if step.final_answer:
-            print(f"   ✅ 完成!")
+            print("   ✅ 完成!")
 
 # ============================================================
 # 命令行入口
@@ -483,9 +483,9 @@ def main():
         return
 
     # 交互模式
-    print(f"\n🚀 ReAct Agent 已就绪！")
+    print("\n🚀 ReAct Agent 已就绪！")
     print(f"   工作区: {WORKSPACE}")
-    print(f"   输入问题开始对话，输入 'quit' 或 'exit' 退出\n")
+    print("   输入问题开始对话，输入 'quit' 或 'exit' 退出\n")
 
     while True:
         try:
