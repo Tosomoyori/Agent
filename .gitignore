@@ -36,5 +36,10 @@ eval_reports/
 .DS_Store
 Thumbs.db
 
+# 外部工具生成的仓库文档（Qoder 等）。不是项目源码，不进仓库。
+.qoder/
+.cursor/
+.aider/
+
 # 日志
 *.log

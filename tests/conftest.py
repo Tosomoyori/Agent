@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from agentkit.core.config import Settings
 from agentkit.core.types import Message, TextBlock, ToolUseBlock
 from agentkit.core.usage import Usage
 from agentkit.llm.base import ChatModel, ModelCapabilities, StreamChunk, ToolCallDelta
@@ -180,3 +181,13 @@ def ctx(workspace: Path) -> ToolContext:
 def registry() -> ToolRegistry:
     """一个空注册表。测试只注册自己关心的工具，避免相互干扰。"""
     return ToolRegistry()
+
+
+@pytest.fixture
+def settings() -> Settings:
+    """测试用配置。
+
+    显式传值，免得读到开发者本机 ``.env`` 里的真实 key——测试不该依赖环境，
+    更不该因为本机没配 key 就失败。
+    """
+    return Settings(api_key="test-key", model="test-model")

@@ -129,8 +129,16 @@ class QueueApprover:
     用 ``tool_use_id`` 做关联键——一次 run 里可能同时挂着多个待审批动作。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, timeout: float | None = 300.0) -> None:
+        """
+        :param timeout: 等待人工决定的上限秒数。``None`` 表示无限等。
+
+        默认不是 ``None``：一个没人接手的 run 如果一直挂着，会永远占着内存和
+        一个工具的执行位，而且从外部看不出它是「在等人」还是「卡死了」。
+        超时按**拒绝**处理——安全方向上的默认值只能往保守那边倒。
+        """
         self._pending: dict[str, asyncio.Future[ApprovalDecision]] = {}
+        self._timeout = timeout
 
     @property
     def pending_ids(self) -> list[str]:
@@ -143,7 +151,11 @@ class QueueApprover:
         self._pending[key] = future
 
         try:
-            return await future
+            if self._timeout is None:
+                return await future
+            return await asyncio.wait_for(future, self._timeout)
+        except TimeoutError:
+            return ApprovalDecision.deny(f"等待审批超时（{self._timeout:g} 秒）")
         finally:
             self._pending.pop(key, None)
 

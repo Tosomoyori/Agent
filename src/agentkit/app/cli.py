@@ -42,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     _add_run_parser(subparsers)
     _add_chat_parser(subparsers)
+    _add_serve_parser(subparsers)
     subparsers.add_parser("tools", help="列出内置工具及其参数 schema")
     _add_sessions_parser(subparsers)
 
@@ -101,6 +102,19 @@ def _add_chat_parser(subparsers: argparse._SubParsersAction) -> None:
     chat = subparsers.add_parser("chat", help="进入交互式对话（同一会话内保持记忆）")
     chat.add_argument("--session", default="default", help="会话 id（默认 default）")
     _add_common_options(chat)
+
+
+def _add_serve_parser(subparsers: argparse._SubParsersAction) -> None:
+    serve = subparsers.add_parser("serve", help="启动 HTTP 服务与 Web 控制台")
+    serve.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1）")
+    serve.add_argument("--port", type=int, default=8000, help="端口（默认 8000）")
+    serve.add_argument(
+        "--reload", action="store_true", help="改动代码后自动重启（开发用）"
+    )
+    _add_common_options(serve)
+    # 服务端不用终端审批——没有 stdin 可读。审批走 QueueApprover，
+    # 由客户端通过 POST /runs/{id}/approvals/{tool_use_id} 决定。
+    serve.set_defaults(no_approve=True)
 
 
 def _add_sessions_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -409,6 +423,56 @@ def chat(args: argparse.Namespace, *, db_path: Path | None) -> int:
             memory.close()
 
 
+def serve(args: argparse.Namespace, *, db_path: Path | None) -> int:
+    """启动 HTTP 服务与 Web 控制台。
+
+    服务端**不用**终端审批：没有 stdin 可读。需要审批的动作会发出
+    ``ApprovalRequested`` 事件，由客户端 POST 决定回来。默认策略是拒绝，
+    所以没人接手审批时任务会失败而不是偷偷放行。
+    """
+    import uvicorn
+
+    from .api import create_app
+
+    workspace = Path(args.workspace) if args.workspace else None
+    settings = load_settings(
+        model=args.model, max_steps=args.max_steps, workspace=workspace
+    )
+
+    memory = MemoryManager.open(
+        db_path or Path(DEFAULT_DB),
+        max_context_tokens=capabilities_for(settings.model).context_window,
+    )
+
+    agent = build_agent(
+        settings,
+        workspace=workspace,
+        tool_groups=_resolve_groups(args.groups),
+        approver=DenyApprover("服务端未接入审批通道，请通过 API 提交决定"),
+        budget=Budget(max_cost=args.max_cost, max_tokens=args.max_tokens),
+        memory=memory,
+    )
+
+    trace_dir = (db_path.parent if db_path else Path(".agentkit"))
+    app = create_app(
+        agent,
+        settings=settings,
+        trace_dir=trace_dir,
+        base_url=f"http://{args.host}:{args.port}",
+    )
+
+    print(f"控制台  http://{args.host}:{args.port}/")
+    print(f"Agent 卡片  http://{args.host}:{args.port}/.well-known/agent-card.json")
+    print(f"模型  {settings.model}    工作区  {agent.workspace}")
+    print(f"trace  {trace_dir / 'traces.jsonl'}")
+
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    finally:
+        memory.close()
+    return 0
+
+
 def list_sessions(db_path: Path) -> int:
     if not db_path.exists():
         print(f"还没有会话记录（{db_path} 不存在）")
@@ -497,6 +561,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "chat":
         db_path = Path(args.db) if args.db else Path(DEFAULT_DB)
         return chat(args, db_path=db_path)
+
+    if args.command == "serve":
+        db_path = Path(args.db) if args.db else Path(DEFAULT_DB)
+        return serve(args, db_path=db_path)
 
     if args.command == "sessions":
         db_path = Path(args.db) if args.db else Path(DEFAULT_DB)

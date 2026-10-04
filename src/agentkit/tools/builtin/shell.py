@@ -55,6 +55,9 @@ async def run_command(
                 tool_name="run_command",
                 arguments={"command": command},
                 reason=assessment.reason,
+                # 显式带上本次调用的 id——审批的请求与决定靠它配对。
+                # （ToolContext.request_approval 也会兜底补上，但这里写明白更好读。）
+                tool_use_id=ctx.tool_use_id,
                 command=command,
             )
         )

@@ -55,9 +55,21 @@ class ToolContext:
     state: dict[str, Any] = field(default_factory=dict)
 
     async def request_approval(self, request) -> bool:
-        """走审批通道。没有通道时**默认拒绝**——不是默认放行。"""
+        """走审批通道。没有通道时**默认拒绝**——不是默认放行。
+
+        这里会**替工具补上 ``tool_use_id``**。审批的请求与决定靠它关联：工具作者
+        忘了填，服务端就会用一个客户端无从得知的兜底 key 挂起，那个审批永远等不到
+        回应，run 也就无声地卡死。
+
+        （这不是假想——最初的 ``run_command`` 就漏了它，实测起服务后跑一个需要
+        审批的命令，run 直接挂住了。宁可在这里补，也不指望每个工具作者都记得。）
+        """
         if self.approver is None:
             return False
+
+        if not request.tool_use_id and self.tool_use_id:
+            request.tool_use_id = self.tool_use_id
+
         decision = await self.approver.request(request)
         return decision.approved
 

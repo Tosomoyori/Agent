@@ -537,3 +537,59 @@ class _Unused:
     """占位，避免 linter 抱怨 import 未使用。"""
 
     _ = ToolSpec
+
+
+class TestApprovalCorrelation:
+    async def test_tool_use_id_is_filled_in_automatically(self, workspace):
+        """工具作者忘了填 tool_use_id 时，上下文要替他补上。
+
+        这条不是假想的边界情况——最初的 ``run_command`` 就漏了它，起服务后跑一个
+        需要审批的命令，服务端会用一个客户端无从得知的兜底 key 挂起，run 无声卡死。
+        """
+        registry = ToolRegistry()
+
+        async def forgetful(ctx, x: Annotated[str, "参数"] = "") -> str:
+            """刻意不传 tool_use_id。"""
+            from agentkit.tools.policy import ApprovalRequest
+
+            request = ApprovalRequest(tool_name="forgetful", arguments={}, reason="测试")
+            assert not request.tool_use_id
+            approved = await ctx.request_approval(request)
+            return f"tool_use_id={request.tool_use_id!r} approved={approved}"
+
+        registry.register(forgetful, dangerous=True)
+        model = ScriptedModel(
+            assistant_tools(("forgetful", {}), id_prefix="boot"),
+            assistant_text("好"),
+        )
+
+        events = await _drain(
+            _engine(model, workspace, registry), "跑", approver=AutoApprover()
+        )
+        result = next(e for e in events if e.type == "tool_result")
+        assert "tool_use_id='boot_0'" in result.content
+
+
+class TestQueueApproverTimeout:
+    async def test_waits_then_denies_on_timeout(self):
+        """没人接手的 run 不该永远挂着——从外部看不出它是「在等人」还是「卡死了」。"""
+        approver = QueueApprover(timeout=0.05)
+        decision = await approver.request(_request("c9"))
+        assert not decision.approved
+        assert "超时" in decision.note
+
+    async def test_pending_entry_is_cleaned_up_after_timeout(self):
+        approver = QueueApprover(timeout=0.05)
+        await approver.request(_request("c9"))
+        assert approver.pending_ids == []
+
+    async def test_timeout_can_be_disabled(self):
+        approver = QueueApprover(timeout=None)
+        task = asyncio.create_task(approver.request(_request("c1")))
+        for _ in range(50):
+            if approver.pending_ids:
+                break
+            await asyncio.sleep(0)
+        assert approver.pending_ids == ["c1"]
+        approver.resolve("c1", True)
+        assert (await asyncio.wait_for(task, timeout=1)).approved

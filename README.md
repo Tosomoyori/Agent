@@ -2,8 +2,8 @@
 
 从零实现的 Agent 开发框架。核心循环、工具层、记忆、评测、可观测性全部自研，不依赖 LangChain 等现成框架。
 
-> **状态**：Phase 2 完成 —— 内核、流式、取消、预算、审批、工作记忆均已实现。
-> 服务化、可观测性、评测见下方路线图。
+> **状态**：Phase 3 完成 —— 内核、流式、取消、预算、审批、工作记忆、可观测性、
+> HTTP 服务与 Web 控制台均已实现。评测见路线图。
 
 ## 设计取舍
 
@@ -24,6 +24,8 @@
 | 工具结果失败一律**回灌**而不中断 run | 参数写错、策略拒绝都是模型能自我修正的；把它们变成可读的错误结果，比抛异常让整个 run 失败有用 |
 | 流式重试**只在首个 chunk 之前**允许 | 已经吐给调用方的内容收不回来，重来一次会重复输出且那部分输入 token 已计费 |
 | 记忆**只做工作记忆 + 持久化** | 语义记忆/情节记忆需要嵌入模型与向量库，且缺乏可接受的评测方式。取舍与后续路径写在 [docs/memory-design.md](docs/memory-design.md) |
+| 可观测性是事件流的**消费者**，不往引擎里埋点 | 埋点式的成对调用迟早会漏掉一处（返回值没接住、异常分支没关），trace 里就出现永不结束的 span。作为消费者，追踪逻辑还能脱离引擎单独测试 |
+| A2A 只做**卡片 + 注册发现** | 签名卡片与 JSON-RPC 服务端是协议一致性工作，不是能力工作，且在控制台里展示不出来。取舍见 [docs/a2a-scope.md](docs/a2a-scope.md) |
 
 ## 快速开始
 
@@ -42,9 +44,16 @@ uv run agentkit run "列出当前目录的文件，然后告诉我 README.md 有
 
 uv run agentkit run "读一下 README" --session s1   # 带会话，跨轮次记住上下文
 uv run agentkit chat                                # 交互式对话
+uv run agentkit serve                               # 起 HTTP 服务 + Web 控制台
 uv run agentkit sessions list                       # 查看历史会话
 uv run agentkit tools                               # 列出工具及其参数 schema
 ```
+
+起服务后：
+
+- 控制台 http://127.0.0.1:8000/ —— 实时看推理链路、工具调用、审批请求与 trace 树
+- Agent 卡片 http://127.0.0.1:8000/.well-known/agent-card.json
+- trace 落在 `.agentkit/traces.jsonl`
 
 需要审批的动作（写文件、执行未知命令）会在终端里问一句；拒绝之后模型会收到
 一条明确的错误，把这一步交回给人，而不是反复重试。非交互场景加 `--no-approve`
@@ -59,10 +68,10 @@ src/agentkit/
 ├── tools/      # 工具协议、注册表、安全策略、内置工具
 ├── memory/     # 工作记忆与 SQLite 持久化
 ├── runtime/    # 引擎循环、事件总线、预算、取消、审批
-├── observability/  # span 树与导出            （Phase 3）
+├── observability/  # span 树与导出（对齐 OTel GenAI 约定）
+├── discovery/  # AgentCard 注册与发现（对齐 A2A）
 ├── evaluation/ # 评测数据集、指标、运行器      （Phase 4）
-├── discovery/  # AgentCard 注册与发现          （Phase 3）
-└── app/        # CLI 与 HTTP 服务
+└── app/        # CLI、HTTP 服务（SSE）与 Web 控制台
 ```
 
 依赖方向是单向的：`core` 零依赖；`llm`/`tools`/`observability` 只依赖 `core`；`runtime` 依赖全部；`app` 只依赖 `runtime`。**`tools` 绝不 import `runtime`**（审批接口由 runtime 注入实现）。
@@ -72,7 +81,7 @@ src/agentkit/
 - [x] **Phase 0** 地基：依赖声明、环境、包结构
 - [x] **Phase 1** 自研内核 + 原生 tool calling + CLI
 - [x] **Phase 2** 流式、工具策略与异步审批、预算、取消、工作记忆
-- [ ] **Phase 3** 可观测性（`gen_ai.*` span）+ FastAPI SSE 服务 + Web 控制台 + Agent 发现
+- [x] **Phase 3** 可观测性（`gen_ai.*` span）+ FastAPI SSE 服务 + Web 控制台 + Agent 发现
 - [ ] **Phase 4** 评测：任务成功率 / 工具正确性 / pass^k / 成本
 - [ ] **Phase 5** 文档、ADR、压测数据
 

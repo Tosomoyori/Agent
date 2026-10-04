@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentKit 控制台</title>
+<!--
+  单文件、原生 JS、无构建链。
+
+  刻意不上框架：这个控制台只有四百来行，引入打包器 + 框架 + 几十 MB 的
+  node_modules 换不来任何东西，却会让「clone 下来就能跑」变成一句空话。
+  面试时被问到前端，能把这四百行的每一处讲清楚，比说「我用了 React」有用得多。
+
+  安全：模型输出和工具结果一律走 textContent，绝不拼 innerHTML。
+  工具结果里可能包含任意文件内容，拼 HTML 就是一个 XSS。
+-->
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #151a21;
+    --panel-2: #1b222b;
+    --line: #262e3a;
+    --ink: #d7dee8;
+    --ink-dim: #8b98a9;
+    --ink-faint: #5b6675;
+    --accent: #6ea8fe;
+    --ok: #57c98a;
+    --warn: #e0b155;
+    --err: #e06c75;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    grid-template-columns: 1fr 360px;
+    grid-template-areas: "bar bar" "main side";
+    height: 100vh;
+  }
+
+  /* ---- 顶栏 ---- */
+  .bar {
+    grid-area: bar;
+    display: flex; gap: 10px; align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .bar h1 {
+    font: 600 15px/1 var(--mono);
+    letter-spacing: .04em;
+    margin: 0 12px 0 0;
+    color: var(--ink);
+  }
+  .bar h1 span { color: var(--accent); }
+  input[type=text] {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--ink);
+    padding: 9px 12px;
+    font: 13px/1.4 var(--mono);
+    outline: none;
+  }
+  input[type=text]:focus { border-color: var(--accent); }
+  button {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--ink);
+    padding: 9px 16px;
+    font: 500 13px/1.4 inherit;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b0f14; }
+  button.ok { border-color: var(--ok); color: var(--ok); }
+  button.no { border-color: var(--err); color: var(--err); }
+
+  /* ---- 主流 ---- */
+  .main { grid-area: main; overflow-y: auto; padding: 18px 20px 60px; }
+  .side { grid-area: side; overflow-y: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 16px; }
+
+  .step {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: .1em;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    margin: 20px 0 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  .answer { white-space: pre-wrap; word-break: break-word; font-size: 15px; }
+  .reasoning {
+    white-space: pre-wrap; color: var(--ink-faint); font-size: 13px;
+    border-left: 2px solid var(--line); padding-left: 12px; margin: 8px 0;
+  }
+  .tool {
+    font-family: var(--mono); font-size: 12.5px;
+    background: var(--panel); border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    padding: 8px 12px; margin: 8px 0;
+    white-space: pre-wrap; word-break: break-all;
+    max-height: 220px; overflow-y: auto;
+  }
+  .tool.error { border-left-color: var(--err); }
+  .tool .head { color: var(--ink-dim); }
+  .tool .body { color: var(--ink-dim); margin-top: 4px; }
+  .tool.error .body { color: var(--err); }
+
+  .approval {
+    border: 1px solid var(--warn); border-radius: 6px;
+    background: rgba(224,177,85,.07);
+    padding: 12px 14px; margin: 10px 0;
+  }
+  .approval .title { color: var(--warn); font-weight: 600; margin-bottom: 6px; }
+  .approval code { font-family: var(--mono); color: var(--ink); }
+  .approval .actions { margin-top: 10px; display: flex; gap: 8px; }
+
+  .footer {
+    margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line);
+    font: 12px/1.6 var(--mono); color: var(--ink-dim);
+    display: flex; gap: 18px; flex-wrap: wrap;
+  }
+
+  /* ---- 侧栏 ---- */
+  .panel-title {
+    font: 600 11px/1 var(--mono); letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-faint);
+    margin: 0 0 10px;
+  }
+  .panel + .panel { margin-top: 22px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12.5px; }
+  .kv dt { color: var(--ink-faint); font-family: var(--mono); }
+  .kv dd { margin: 0; font-family: var(--mono); text-align: right; word-break: break-all; }
+  .tree {
+    font: 12px/1.7 var(--mono); white-space: pre-wrap; word-break: break-word;
+    color: var(--ink-dim); margin: 0;
+  }
+  .hint { color: var(--ink-faint); font-size: 12.5px; }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <h1>Agent<span>Kit</span></h1>
+  <input id="prompt" type="text" placeholder="让 agent 做点什么，例如：统计 src 下有多少个 Python 文件"
+         autocomplete="off">
+  <button id="send" class="primary">运行</button>
+  <button id="stop" disabled>取消</button>
+</div>
+
+<div class="main" id="main">
+  <p class="hint">输入任务并回车。推理过程、工具调用、审批请求都会实时出现在这里。</p>
+</div>
+
+<div class="side">
+  <div class="panel">
+    <p class="panel-title">本次运行</p>
+    <dl class="kv" id="stats">
+      <dt>状态</dt><dd id="s-status">空闲</dd>
+      <dt>run</dt><dd id="s-run">—</dd>
+      <dt>步数</dt><dd id="s-steps">—</dd>
+      <dt>输入</dt><dd id="s-in">—</dd>
+      <dt>输出</dt><dd id="s-out">—</dd>
+      <dt>缓存</dt><dd id="s-cache">—</dd>
+      <dt>花费</dt><dd id="s-cost">—</dd>
+    </dl>
+  </div>
+
+  <div class="panel">
+    <p class="panel-title">Trace</p>
+    <pre class="tree" id="tree">运行结束后显示。</pre>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const main = $("main");
+  let source = null;
+  let runId = null;
+  let answerEl = null;      // 当前正在流式写入的正文节点
+  let lastSeq = 0;
+
+  // ---- 渲染辅助 ----
+
+  function step(label) {
+    answerEl = null;
+    const el = document.createElement("div");
+    el.className = "step";
+    el.textContent = label;
+    main.appendChild(el);
+    scroll();
+  }
+
+  function scroll() { main.scrollTop = main.scrollHeight; }
+
+  /** 正文流式追加。多次调用会写进同一个节点，不换行。 */
+  function appendAnswer(text) {
+    if (!answerEl) {
+      answerEl = document.createElement("div");
+      answerEl.className = "answer";
+      main.appendChild(answerEl);
+    }
+    // textContent += 而不是 innerHTML —— 模型输出不可信
+    answerEl.textContent += text;
+    scroll();
+  }
+
+  function appendReasoning(text) {
+    let el = main.querySelector(".reasoning:last-of-type");
+    if (!el || el.dataset.closed === "1") {
+      el = document.createElement("div");
+      el.className = "reasoning";
+      main.appendChild(el);
+    }
+    el.textContent += text;
+    scroll();
+  }
+
+  function appendTool(direction, label, body, isError) {
+    answerEl = null;
+    const el = document.createElement("div");
+    el.className = "tool" + (isError ? " error" : "");
+    const head = document.createElement("div");
+    head.className = "head";
+    head.textContent = direction + " " + label;
+    el.appendChild(head);
+    if (body) {
+      const b = document.createElement("div");
+      b.className = "body";
+      b.textContent = body;
+      el.appendChild(b);
+    }
+    main.appendChild(el);
+    scroll();
+  }
+
+  function appendNotice(text, cls) {
+    const el = document.createElement("div");
+    if (cls) el.className = cls;
+    el.textContent = text;
+    main.appendChild(el);
+    scroll();
+  }
+
+  function footer(event) {
+    const el = document.createElement("div");
+    el.className = "footer";
+    const bits = [`${event.steps} 步`, `${event.duration_ms}ms`];
+    const u = event.usage || {};
+    if (u.input_tokens != null) bits.push(`入 ${u.input_tokens} / 出 ${u.output_tokens} tokens`);
+    if (u.cached_input_tokens) bits.push(`缓存命中 ${u.cached_input_tokens}`);
+    if (event.cost != null) bits.push(`约 ${event.cost.toFixed(4)} ${event.currency}`);
+    bits.forEach((t) => {
+      const s = document.createElement("span");
+      s.textContent = t;
+      el.appendChild(s);
+    });
+    main.appendChild(el);
+    scroll();
+  }
+
+  function setStatus(text, color) {
+    const el = $("s-status");
+    el.textContent = text;
+    el.style.color = color || "";
+  }
+
+  // ---- 审批 ----
+
+  function renderApproval(event) {
+    const box = document.createElement("div");
+    box.className = "approval";
+
+    const title = document.createElement("div");
+    title.className = "title";
+    title.textContent = "需要审批：" + event.tool_name;
+    box.appendChild(title);
+
+    const cmd = document.createElement("code");
+    cmd.textContent = event.arguments && event.arguments.command
+      ? event.arguments.command
+      : JSON.stringify(event.arguments);
+    box.appendChild(cmd);
+
+    const why = document.createElement("div");
+    why.className = "hint";
+    why.textContent = event.reason;
+    box.appendChild(why);
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const yes = document.createElement("button");
+    yes.className = "ok";
+    yes.textContent = "批准";
+    const no = document.createElement("button");
+    no.className = "no";
+    no.textContent = "拒绝";
+    actions.append(yes, no);
+    box.appendChild(actions);
+
+    const decide = async (approved) => {
+      yes.disabled = no.disabled = true;
+      try {
+        const res = await fetch(
+          `/runs/${runId}/approvals/${encodeURIComponent(event.tool_use_id)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ approved, note: "来自控制台" }),
+          }
+        );
+        if (!res.ok) throw new Error(await res.text());
+        box.style.opacity = ".5";
+        box.style.borderColor = "var(--line)";
+      } catch (err) {
+        appendNotice("审批提交失败：" + err.message);
+      }
+    };
+    yes.onclick = () => decide(true);
+    no.onclick = () => decide(false);
+
+    main.appendChild(box);
+    scroll();
+  }
+
+  // ---- 事件分发 ----
+
+  function handle(event) {
+    lastSeq = Math.max(lastSeq, event.seq || 0);
+    switch (event.type) {
+      case "run_started":
+        appendNotice(`任务：${event.input}`, "hint");
+        break;
+      case "step_started":
+        step(`步骤 ${event.step} / 模型推理`);
+        break;
+      case "reasoning_delta":
+        appendReasoning(event.text);
+        break;
+      case "text_delta":
+        appendAnswer(event.text);
+        break;
+      case "tool_call_started":
+        appendTool("→", event.tool_name, JSON.stringify(event.arguments), false);
+        break;
+      case "tool_result":
+        appendTool("←", `${event.tool_name}（${event.duration_ms}ms）`, event.content, event.is_error);
+        break;
+      case "approval_requested":
+        renderApproval(event);
+        break;
+      case "approval_resolved":
+        appendNotice(event.approved ? "✓ 已批准" : "✗ 已拒绝（" + (event.note || "") + "）", "hint");
+        break;
+      case "usage_reported":
+        $("s-in").textContent = event.cumulative.input_tokens;
+        $("s-out").textContent = event.cumulative.output_tokens;
+        $("s-cache").textContent = event.cumulative.cached_input_tokens;
+        break;
+      case "run_completed":
+        if (!answerEl && event.text) appendAnswer(event.text);
+        footer(event);
+        $("s-steps").textContent = event.steps;
+        if (event.cost != null) $("s-cost").textContent = event.cost.toFixed(4) + " " + event.currency;
+        setStatus("完成", "var(--ok)");
+        finish();
+        break;
+      case "run_failed":
+        appendNotice(`✗ 失败 [${event.error_type}]：${event.message}`);
+        setStatus("失败", "var(--err)");
+        finish();
+        break;
+      case "run_cancelled":
+        appendNotice(`⊘ 已取消：${event.reason}`);
+        setStatus("已取消", "var(--warn)");
+        finish();
+        break;
+    }
+  }
+
+  function finish() {
+    if (source) { source.close(); source = null; }
+    $("send").disabled = false;
+    $("stop").disabled = true;
+    loadTrace();
+  }
+
+  /** 拉取 trace 树。run 结束后才有内容。 */
+  async function loadTrace() {
+    if (!runId) return;
+    await new Promise((r) => setTimeout(r, 120));  // 等 trace 收尾
+    try {
+      const res = await fetch(`/runs/${runId}/trace`);
+      const data = await res.json();
+      $("tree").textContent = data.ready
+        ? formatTree(data.trace.root, 0)
+        : "trace 尚未就绪。";
+    } catch {
+      $("tree").textContent = "trace 获取失败。";
+    }
+  }
+
+  /** 把 span 树渲染成缩进文本。 */
+  function formatTree(span, depth) {
+    if (!span) return "(空)";
+    const pad = "  ".repeat(depth);
+    const mark = span.status === "OK" ? "✓" : span.status === "ERROR" ? "✗" : "·";
+    let line = `${pad}${mark} ${span.name}  ${Math.round(span.duration_ms)}ms`;
+    const a = span.attributes || {};
+    if (span.kind === "chat") {
+      line += `  [入 ${a["gen_ai.usage.input_tokens"] || 0} / 出 ${a["gen_ai.usage.output_tokens"] || 0}]`;
+    }
+    const lines = [line];
+    (span.events || []).forEach((e) => lines.push(`${pad}    · ${e.name}`));
+    (span.children || []).forEach((c) => lines.push(formatTree(c, depth + 1)));
+    return lines.join("\n");
+  }
+
+  // ---- 发起 ----
+
+  async function send() {
+    const prompt = $("prompt").value.trim();
+    if (!prompt) return;
+
+    // replaceChildren 而不是 innerHTML = ""：整个文件里一处 innerHTML 都不用，
+    // 「模型输出绝不经由 innerHTML」这条规则就没有例外可钻。
+    main.replaceChildren();
+    lastSeq = 0;
+    runId = null;
+    $("tree").textContent = "运行中…";
+    ["s-run", "s-steps", "s-in", "s-out", "s-cache", "s-cost"].forEach((id) => {
+      $(id).textContent = "—";
+    });
+    setStatus("运行中", "var(--accent)");
+    $("send").disabled = true;
+    $("stop").disabled = false;
+
+    let id;
+    try {
+      const res = await fetch("/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      id = (await res.json()).run_id;
+      runId = id;
+      $("s-run").textContent = id.slice(4, 16);
+    } catch (err) {
+      appendNotice("启动失败：" + err.message);
+      setStatus("失败", "var(--err)");
+      $("send").disabled = false;
+      $("stop").disabled = true;
+      return;
+    }
+
+    // 浏览器原生 EventSource：断线会自动重连，并把 Last-Event-ID 带回来。
+    // 服务端据此续传（见 api.py 的 _format_sse）。
+    source = new EventSource(`/runs/${id}/events`);
+    source.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch {} };
+    source.onerror = () => {
+      // 事件流结束后 EventSource 也会报 error，此时不该重试
+      if (source && source.readyState === EventSource.CLOSED) source = null;
+    };
+  }
+
+  async function cancel() {
+    if (!runId) return;
+    $("stop").disabled = true;
+    try {
+      await fetch(`/runs/${runId}`, { method: "DELETE" });
+    } catch {}
+  }
+
+  // ---- 绑定 ----
+
+  $("send").onclick = send;
+  $("stop").onclick = cancel;
+  $("prompt").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !$("send").disabled) send();
+  });
+  $("prompt").focus();
+})();
+</script>
+</body>
+</html>
