@@ -1,7 +1,7 @@
 """命令行入口。
 
 CLI 只是事件流的一个消费者——和 SSE 端点、评测运行器消费的是同一条流。
-这是「引擎只 yield 事件」这个设计带来的直接好处：换个前端不需要动引擎。
+换个前端不需要动引擎，这是「引擎只产出事件」这个设计的直接好处。
 """
 
 from __future__ import annotations
@@ -17,13 +17,19 @@ from pathlib import Path
 from ..core.config import load_settings
 from ..core.errors import AgentKitError
 from ..core.events import RunEvent
-from ..runtime.agent import build_agent
+from ..llm.catalog import capabilities_for
+from ..memory.manager import MemoryManager
+from ..runtime.agent import Agent, build_agent
+from ..runtime.approval import ConsoleApprover, DenyApprover
+from ..runtime.budget import Budget
 from ..tools.builtin import BUILTIN_GROUPS
 
 __all__ = ["main", "run_once"]
 
 #: 工具结果在终端里的预览长度。完整内容在 --json-events 或 trace 里看。
 _PREVIEW_CHARS = 400
+
+DEFAULT_DB = ".agentkit/sessions.db"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,72 +41,140 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     _add_run_parser(subparsers)
-    _add_tools_parser(subparsers)
+    _add_chat_parser(subparsers)
+    subparsers.add_parser("tools", help="列出内置工具及其参数 schema")
+    _add_sessions_parser(subparsers)
 
     return parser
+
+
+def _add_common_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-w", "--workspace", default=None, help="工作区目录（默认: 当前目录）"
+    )
+    parser.add_argument("-m", "--model", default=None, help="覆盖模型 id")
+    parser.add_argument("-s", "--max-steps", type=int, default=None, help="最大步数")
+    parser.add_argument(
+        "--groups",
+        default=None,
+        help=f"逗号分隔的工具分组，可选: {', '.join(BUILTIN_GROUPS)}（默认全部）",
+    )
+    parser.add_argument(
+        "--no-approve",
+        action="store_true",
+        help="关闭审批通道。需要审批的动作会被直接拒绝（比自动放行安全）",
+    )
+    parser.add_argument(
+        "--max-cost",
+        type=float,
+        default=None,
+        help="本次 run 的成本上限（单位与模型定价一致）",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="本次 run 的输入+输出 token 上限",
+    )
+    parser.add_argument("--db", default=None, help=f"会话数据库路径（默认 {DEFAULT_DB}）")
+    parser.add_argument(
+        "--show-reasoning",
+        action="store_true",
+        help="把模型的思维链也打出来（默认只计数，避免刷屏）",
+    )
+    parser.add_argument("-q", "--quiet", action="store_true", help="只输出最终答复")
 
 
 def _add_run_parser(subparsers: argparse._SubParsersAction) -> None:
     run = subparsers.add_parser("run", help="执行一个任务")
     run.add_argument("prompt", nargs="+", help="任务描述")
-    run.add_argument(
-        "-w", "--workspace", default=None, help="工作区目录（默认: 当前目录）"
-    )
-    run.add_argument("-m", "--model", default=None, help="覆盖模型 id")
-    run.add_argument("-s", "--max-steps", type=int, default=None, help="最大步数")
+    run.add_argument("--session", default=None, help="会话 id。给了就在这个会话里续跑")
     run.add_argument(
         "--json-events",
         action="store_true",
         help="把事件流按 JSONL 打到 stdout，便于管道处理",
     )
-    run.add_argument(
-        "--groups",
-        default=None,
-        help=f"逗号分隔的工具分组，可选: {', '.join(BUILTIN_GROUPS)}（默认全部）",
-    )
-    run.add_argument(
-        "--no-auto-approve",
-        action="store_true",
-        help="高危命令不自动放行，改为告知模型需要人工审批",
-    )
-    run.add_argument("-q", "--quiet", action="store_true", help="只输出最终答复")
+    _add_common_options(run)
 
 
-def _add_tools_parser(subparsers: argparse._SubParsersAction) -> None:
-    subparsers.add_parser("tools", help="列出内置工具及其参数 schema")
+def _add_chat_parser(subparsers: argparse._SubParsersAction) -> None:
+    chat = subparsers.add_parser("chat", help="进入交互式对话（同一会话内保持记忆）")
+    chat.add_argument("--session", default="default", help="会话 id（默认 default）")
+    _add_common_options(chat)
+
+
+def _add_sessions_parser(subparsers: argparse._SubParsersAction) -> None:
+    sessions = subparsers.add_parser("sessions", help="管理会话")
+    sessions.add_argument(
+        "action", choices=["list", "show", "delete"], nargs="?", default="list"
+    )
+    sessions.add_argument("session_id", nargs="?", default=None, help="会话 id")
+    sessions.add_argument("--db", default=None, help=f"会话数据库路径（默认 {DEFAULT_DB}）")
 
 
 # ---------------------------------------------------------------- 渲染
 
 
 class ConsoleRenderer:
-    """把事件流渲染成人读的终端输出。"""
+    """把事件流渲染成人读的终端输出。
 
-    def __init__(self, *, quiet: bool = False) -> None:
+    正文增量**直接接着上一个印**，不换行——否则一句话会被拆成几十行。
+    思维链默认只计数：实测里它可能占输出 token 的绝大多数（回答"数到五"
+    会产生上千个思维链 token），逐条打印会把真正要看的内容冲走。
+    """
+
+    def __init__(self, *, quiet: bool = False, show_reasoning: bool = False) -> None:
         self.quiet = quiet
+        self.show_reasoning = show_reasoning
+        self._reset()
+
+    def _reset(self) -> None:
+        self._reasoning_chars = 0
+        #: 光标是否停在一行中间（刚打印过增量但没换行）。
+        self._line_open = False
+        #: 停着的那行是正文还是思维链。类型不同才需要换行——
+        #: 同一类型的连续增量必须接着印，否则一句话会被拆成十几行。
+        self._line_kind = ""
+        #: 本次 run 是否已经把正文流式印出来了。收尾时据此决定要不要重印一遍答案。
+        #: 这个标记**不能**在 _flush_line 里清掉——清了就会把答案印两遍，
+        #: 因为 usage 事件夹在正文和收尾事件之间。
+        self._text_written = False
 
     def __call__(self, event: RunEvent) -> None:
         match event.type:
             case "run_started":
+                self._reset()
                 if not self.quiet:
-                    print(f"\n{'─' * 64}")
-                    print(f"agent={event.agent}  model={event.model}")
+                    print(f"\nagent={event.agent}  model={event.model}")
                     print(f"task: {event.input}")
-                    print(f"{'─' * 64}")
+                    print("─" * 64)
 
             case "step_started":
                 if not self.quiet:
-                    print(f"\n[步骤 {event.step}]")
+                    print(f"\n[{event.step}]", end=" ")
 
             case "reasoning_delta":
-                if not self.quiet:
-                    print(f"  · 思考: {_preview(event.text, 200)}")
+                self._reasoning_chars += len(event.text)
+                if self.show_reasoning:
+                    if self._line_open and self._line_kind != "reasoning":
+                        self._flush_line()
+                    if not self._line_open:
+                        print("\n  💭 ", end="")
+                        self._line_open = True
+                        self._line_kind = "reasoning"
+                    print(event.text, end="", flush=True)
 
             case "text_delta":
-                if not self.quiet:
-                    print(f"  · 输出: {_preview(event.text, 200)}")
+                # 只有从思维链切回正文时才需要换行；正文的连续片段必须接着印
+                if self._line_open and self._line_kind != "text":
+                    self._flush_line()
+                print(event.text, end="", flush=True)
+                self._line_open = True
+                self._line_kind = "text"
+                self._text_written = True
 
             case "tool_call_started":
+                self._flush_line()
                 args = json.dumps(event.arguments, ensure_ascii=False)
                 print(f"  → {event.tool_name}({_preview(args, 160)})")
 
@@ -109,36 +183,62 @@ class ConsoleRenderer:
                 preview = _preview(event.content, _PREVIEW_CHARS)
                 print(f"  ← {mark} ({event.duration_ms}ms): {preview}")
 
+            case "approval_requested":
+                self._flush_line()
+                print(f"  ⏸ 需要审批: {event.tool_name} — {event.reason}")
+
+            case "approval_resolved":
+                mark = "✓" if event.approved else "✗"
+                verdict = "已批准" if event.approved else "已拒绝"
+                note = f"（{event.note}）" if event.note else ""
+                print(f"  {mark} {verdict}{note}")
+
             case "usage_reported":
                 if not self.quiet:
-                    u = event.cumulative
-                    print(
-                        f"  · tokens: 入 {u.input_tokens}（缓存 {u.cached_input_tokens}）"
-                        f" / 出 {u.output_tokens}"
-                    )
+                    self._render_usage(event)
 
             case "run_completed":
                 self._render_completion(event)
 
             case "run_failed":
+                self._flush_line()
                 print(f"\n✗ 失败 [{event.error_type}]: {event.message}", file=sys.stderr)
 
             case "run_cancelled":
+                self._flush_line()
                 print(f"\n⊘ 已取消: {event.reason}", file=sys.stderr)
 
-    @staticmethod
-    def _render_completion(event: RunEvent) -> None:
-        print(f"\n{'─' * 64}")
-        print(event.text)
-        print(f"{'─' * 64}")
+    def _flush_line(self) -> None:
+        """把停在半行的光标收掉。幂等。"""
+        if self._line_open:
+            print()
+            self._line_open = False
+            self._line_kind = ""
+
+    def _render_usage(self, event: RunEvent) -> None:
+        self._flush_line()
+        u = event.cumulative
+        parts = [f"入 {u.input_tokens:,}", f"出 {u.output_tokens:,}"]
+        if u.cached_input_tokens:
+            parts.append(f"缓存 {u.cached_input_tokens:,}")
+        if self._reasoning_chars:
+            parts.append(f"思维链 {self._reasoning_chars:,} 字")
+        print(f"  · {'  '.join(parts)}")
+
+    def _render_completion(self, event: RunEvent) -> None:
+        if self._text_written:
+            self._flush_line()  # 正文已经边生成边印了，不再重复一遍
+        else:
+            print(f"\n{event.text}")
 
         stats = [f"{event.steps} 步", f"{event.duration_ms}ms"]
         u = event.usage
-        stats.append(f"入 {u.input_tokens} / 出 {u.output_tokens} tokens")
+        stats.append(f"入 {u.input_tokens:,} / 出 {u.output_tokens:,} tokens")
         if u.cached_input_tokens:
-            stats.append(f"缓存命中 {u.cached_input_tokens}")
+            stats.append(f"缓存命中 {u.cached_input_tokens:,}")
         if event.cost is not None:
             stats.append(f"约 {event.cost:.4f} {event.currency}")
+        print("─" * 64)
         print("  ".join(stats))
 
 
@@ -148,80 +248,7 @@ def _preview(text: str, limit: int) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
-# ---------------------------------------------------------------- 命令
-
-def run_once(
-    prompt: str,
-    *,
-    workspace: Path | None = None,
-    model: str | None = None,
-    max_steps: int | None = None,
-    groups: list[str] | None = None,
-    auto_approve: bool = True,
-    quiet: bool = False,
-    json_events: bool = False,
-) -> int:
-    """执行一个任务，返回进程退出码。"""
-    settings = load_settings(
-        model=model,
-        max_steps=max_steps,
-        workspace=workspace,
-    )
-
-    agent = build_agent(
-        settings,
-        workspace=workspace,
-        tool_groups=groups,
-        auto_approve=auto_approve,
-    )
-
-    renderer = ConsoleRenderer(quiet=quiet)
-    failed = False
-
-    async def drive() -> None:
-        nonlocal failed
-        try:
-            async for event in agent.stream(prompt):
-                if json_events:
-                    # exclude_none 会丢掉 type 以外的可选字段，这里全量输出
-                    print(event.model_dump_json(), flush=True)
-                else:
-                    renderer(event)
-
-                if event.type == "run_failed":
-                    failed = True
-        finally:
-            await agent.aclose()
-
-    try:
-        asyncio.run(drive())
-    except AgentKitError as exc:
-        print(f"✗ {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 2
-    except KeyboardInterrupt:
-        print("\n已中断", file=sys.stderr)
-        return 130
-
-    return 1 if failed else 0
-
-
-def list_tools() -> int:
-    """打印内置工具及其参数 schema。"""
-    from ..tools.builtin import default_registry
-
-    registry = default_registry()
-    for spec in registry.all():
-        flags = []
-        if spec.dangerous:
-            flags.append("有副作用")
-        if not spec.idempotent:
-            flags.append("非幂等")
-        suffix = f"  [{'、'.join(flags)}]" if flags else ""
-        print(f"\n{spec.name}{suffix}")
-        print(f"  {spec.description}")
-        print("  参数:")
-        print(json.dumps(spec.json_schema(), ensure_ascii=False, indent=4))
-    return 0
+# ---------------------------------------------------------------- 组装
 
 
 def _force_utf8_stdio() -> None:
@@ -240,36 +267,247 @@ def _force_utf8_stdio() -> None:
                 reconfigure(encoding="utf-8")
 
 
+def _resolve_groups(raw: str | None) -> list[str] | None:
+    if not raw:
+        return None
+    groups = [g.strip() for g in raw.split(",") if g.strip()]
+    unknown = set(groups) - set(BUILTIN_GROUPS)
+    if unknown:
+        raise SystemExit(
+            f"✗ 未知的工具分组: {', '.join(sorted(unknown))}。"
+            f"可选: {', '.join(BUILTIN_GROUPS)}"
+        )
+    return groups
+
+
+def _build(
+    args: argparse.Namespace,
+    *,
+    db_path: Path | None,
+    use_memory: bool,
+) -> tuple[Agent, MemoryManager | None]:
+    """按命令行参数组装 agent 与（可选的）记忆管理器。"""
+    workspace = Path(args.workspace) if getattr(args, "workspace", None) else None
+    settings = load_settings(
+        model=getattr(args, "model", None),
+        max_steps=getattr(args, "max_steps", None),
+        workspace=workspace,
+    )
+
+    memory = None
+    if use_memory and db_path is not None:
+        # 用模型声明的真实上下文窗口，而不是写死一个数——裁多了浪费，
+        # 裁少了直接撑爆请求。未知模型会落到能力目录里的保守默认值。
+        memory = MemoryManager.open(
+            db_path,
+            max_context_tokens=capabilities_for(settings.model).context_window,
+        )
+
+    user_groups = _resolve_groups(getattr(args, "groups", None))
+    auto = not getattr(args, "no_approve", False)
+    # --no-approve 时用 DenyApprover 而不是 None：语义是「别问我，但也别自作主张」。
+    # 传 None 和传 DenyApprover 在这里行为相同，但显式一点更好读日志。
+    approver = ConsoleApprover() if auto else DenyApprover("已用 --no-approve 关闭审批")
+
+    agent = build_agent(
+        settings,
+        workspace=workspace,
+        tool_groups=user_groups,
+        approver=approver,
+        budget=Budget(
+            max_cost=getattr(args, "max_cost", None),
+            max_tokens=getattr(args, "max_tokens", None),
+        ),
+        memory=memory,
+    )
+    return agent, memory
+
+
+# ---------------------------------------------------------------- 命令
+
+
+def run_once(args: argparse.Namespace, *, db_path: Path | None) -> int:
+    """执行一个任务，返回进程退出码。"""
+    session_id = getattr(args, "session", None)
+    agent, memory = _build(args, db_path=db_path, use_memory=bool(session_id))
+
+    renderer = ConsoleRenderer(
+        quiet=args.quiet, show_reasoning=args.show_reasoning
+    )
+    failed = False
+
+    async def drive() -> None:
+        nonlocal failed
+        try:
+            async for event in agent.stream(" ".join(args.prompt), session_id=session_id):
+                if args.json_events:
+                    print(event.model_dump_json(), flush=True)
+                else:
+                    renderer(event)
+                if event.type == "run_failed":
+                    failed = True
+        finally:
+            await agent.aclose()
+            if memory is not None:
+                memory.close()
+
+    try:
+        asyncio.run(drive())
+    except AgentKitError as exc:
+        print(f"✗ {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("\n已中断", file=sys.stderr)
+        return 130
+
+    return 1 if failed else 0
+
+
+def chat(args: argparse.Namespace, *, db_path: Path | None) -> int:
+    """交互式对话。整个会话共用一个 session_id，所以上下文能延续。"""
+    agent, memory = _build(args, db_path=db_path, use_memory=True)
+    renderer = ConsoleRenderer(
+        quiet=args.quiet, show_reasoning=args.show_reasoning
+    )
+    session_id = args.session
+
+    print(f"会话: {session_id}    工作区: {agent.workspace}")
+    print("输入问题开始对话，'exit' 退出，'/new' 换一个会话\n")
+
+    async def ask(prompt: str) -> int:
+        failed = False
+        async for event in agent.stream(prompt, session_id=session_id):
+            renderer(event)
+            if event.type == "run_failed":
+                failed = True
+        return 1 if failed else 0
+
+    try:
+        while True:
+            try:
+                prompt = input("\n你: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n再见！")
+                return 0
+
+            if not prompt:
+                continue
+            if prompt.lower() in ("exit", "quit", "退出"):
+                print("再见！")
+                return 0
+            if prompt == "/new":
+                import uuid
+
+                session_id = f"session_{uuid.uuid4().hex[:8]}"
+                print(f"已切换到新会话: {session_id}")
+                continue
+
+            asyncio.run(ask(prompt))
+    finally:
+        asyncio.run(agent.aclose())
+        if memory is not None:
+            memory.close()
+
+
+def list_sessions(db_path: Path) -> int:
+    if not db_path.exists():
+        print(f"还没有会话记录（{db_path} 不存在）")
+        return 0
+
+    memory = MemoryManager.open(db_path)
+    try:
+        sessions = asyncio.run(memory.list_sessions())
+    finally:
+        memory.close()
+
+    if not sessions:
+        print("还没有会话记录")
+        return 0
+
+    import datetime
+
+    print(f"{'会话':<28} {'消息数':>6}  最后更新")
+    for info in sessions:
+        stamp = datetime.datetime.fromtimestamp(info.updated_at).strftime("%Y-%m-%d %H:%M")
+        print(f"{info.id:<28} {info.message_count:>6}  {stamp}")
+    return 0
+
+
+def show_session(db_path: Path, session_id: str) -> int:
+    memory = MemoryManager.open(db_path)
+    try:
+        messages = asyncio.run(memory.history(session_id))
+    finally:
+        memory.close()
+
+    if not messages:
+        print(f"会话 {session_id} 没有消息")
+        return 1
+
+    for index, message in enumerate(messages, 1):
+        label = {"user": "用户", "assistant": "助手", "system": "系统"}[message.role]
+        body = message.text() or (
+            f"[{len(message.tool_uses())} 次工具调用]"
+            if message.tool_uses()
+            else f"[{len(message.tool_results())} 条工具结果]"
+        )
+        print(f"\n{index:>3} {label}: {body[:300]}")
+    return 0
+
+
+def delete_session(db_path: Path, session_id: str) -> int:
+    memory = MemoryManager.open(db_path)
+    try:
+        ok = asyncio.run(memory.delete_session(session_id))
+    finally:
+        memory.close()
+    print(f"{'已删除' if ok else '没找到'} 会话 {session_id}")
+    return 0 if ok else 1
+
+
+def list_tools() -> int:
+    """打印内置工具及其参数 schema。"""
+    from ..tools.builtin import default_registry
+
+    for spec in default_registry().all():
+        flags = []
+        if spec.dangerous:
+            flags.append("有副作用")
+        if not spec.idempotent:
+            flags.append("非幂等")
+        suffix = f"  [{'、'.join(flags)}]" if flags else ""
+        print(f"\n{spec.name}{suffix}")
+        print(f"  {spec.description}")
+        print("  参数:")
+        print(json.dumps(spec.json_schema(), ensure_ascii=False, indent=4))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _force_utf8_stdio()
     args = build_parser().parse_args(argv)
 
-    if args.command == "run":
-        groups = None
-        if args.groups:
-            groups = [g.strip() for g in args.groups.split(",") if g.strip()]
-            unknown = set(groups) - set(BUILTIN_GROUPS)
-            if unknown:
-                print(
-                    f"✗ 未知的工具分组: {', '.join(sorted(unknown))}。"
-                    f"可选: {', '.join(BUILTIN_GROUPS)}",
-                    file=sys.stderr,
-                )
-                return 2
-
-        return run_once(
-            " ".join(args.prompt),
-            workspace=Path(args.workspace) if args.workspace else None,
-            model=args.model,
-            max_steps=args.max_steps,
-            groups=groups,
-            auto_approve=not args.no_auto_approve,
-            quiet=args.quiet,
-            json_events=args.json_events,
-        )
-
     if args.command == "tools":
         return list_tools()
+
+    if args.command == "run":
+        db_path = Path(args.db) if args.db else Path(DEFAULT_DB)
+        return run_once(args, db_path=db_path)
+
+    if args.command == "chat":
+        db_path = Path(args.db) if args.db else Path(DEFAULT_DB)
+        return chat(args, db_path=db_path)
+
+    if args.command == "sessions":
+        db_path = Path(args.db) if args.db else Path(DEFAULT_DB)
+        if args.action == "list":
+            return list_sessions(db_path)
+        if not args.session_id:
+            print("需要给出 session_id", file=sys.stderr)
+            return 2
+        if args.action == "show":
+            return show_session(db_path, args.session_id)
+        return delete_session(db_path, args.session_id)
 
     return 2  # pragma: no cover - argparse 的 required=True 已经挡住
 

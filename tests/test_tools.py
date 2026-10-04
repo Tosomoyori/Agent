@@ -301,14 +301,41 @@ class TestShellTool:
         assert result.is_error
         assert "破坏性" in result.content
 
-    async def test_unknown_command_needs_approval_when_not_auto(self, ctx, workspace):
-        """审批通道未开启时，如实告诉模型需要人工——而不是偷偷放行。"""
-        strict = ToolContext(workspace=workspace, auto_approve=False)
+    async def test_command_needing_approval_is_refused_without_a_channel(
+        self, ctx, workspace
+    ):
+        """没有审批通道时**默认拒绝**，不是默认放行。
+
+        这是刻意的安全默认值：没人看着的时候，让 agent 自主执行写操作或命令，
+        出了事没人能及时拦。
+        """
+        no_channel = ToolContext(workspace=workspace, approver=None)
         result = await default_registry().invoke(
-            "run_command", {"command": "frobnicate --all"}, strict
+            "run_command", {"command": "frobnicate --all"}, no_channel
         )
         assert result.is_error
-        assert "人工审批" in result.content
+        assert "未经批准" in result.content
+
+    async def test_approved_command_runs(self, workspace):
+        """有审批通道且批准时，命令照常执行。"""
+        from agentkit.runtime.approval import AutoApprover
+
+        permitted = ToolContext(workspace=workspace, approver=AutoApprover())
+        result = await default_registry().invoke(
+            "run_command", {"command": "frobnicate --all"}, permitted
+        )
+        # 批准了，但命令本身不存在，所以是执行失败而不是被拒绝
+        assert "未经批准" not in result.content
+
+    async def test_denied_command_reports_the_denial(self, workspace):
+        from agentkit.runtime.approval import DenyApprover
+
+        denied = ToolContext(workspace=workspace, approver=DenyApprover("测试拒绝"))
+        result = await default_registry().invoke(
+            "run_command", {"command": "frobnicate --all"}, denied
+        )
+        assert result.is_error
+        assert "未经批准" in result.content
 
 
 # ---------------------------------------------------------------- 测试用工具

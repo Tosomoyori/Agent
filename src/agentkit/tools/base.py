@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field, create_model
 
 from ..core.errors import ToolValidationError
 from ..core.types import ToolSchema
-from .policy import resolve_in_workspace
+from .policy import Approver, resolve_in_workspace
 
 __all__ = ["ToolContext", "ToolSpec", "ContextAwareCallable", "build_args_model"]
 
@@ -45,10 +45,21 @@ class ToolContext:
     workspace: Path
     #: 当前 run 的 id，用于日志关联。
     run_id: str = ""
-    #: 是否自动批准需要审批的动作。Phase 2 会被真正的异步审批取代。
-    auto_approve: bool = False
+    #: 当前这次工具调用的 id。由注册表在每次调用前填好——审批要靠它把
+    #: 「提出请求」和「收到决定」关联起来。
+    tool_use_id: str = ""
+    #: 审批通道。``None`` 表示没有通道——此时需要审批的动作会被拒绝而不是放行。
+    #: 类型是 ``tools.policy`` 里的协议，具体实现由 runtime 注入。
+    approver: Approver | None = None
     #: 供工具之间共享的进程内状态。刻意保留为显式字段，避免再引入模块级全局变量。
     state: dict[str, Any] = field(default_factory=dict)
+
+    async def request_approval(self, request) -> bool:
+        """走审批通道。没有通道时**默认拒绝**——不是默认放行。"""
+        if self.approver is None:
+            return False
+        decision = await self.approver.request(request)
+        return decision.approved
 
     def resolve(self, path: str | Path) -> Path:
         """把路径解析成工作区内的真实路径，越界时抛 :class:`PathViolation`。"""

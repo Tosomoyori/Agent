@@ -11,7 +11,8 @@ from typing import Annotated
 import pytest
 
 from agentkit.core.errors import RateLimitError
-from agentkit.core.types import Message, ToolUseBlock, validate_conversation
+from agentkit.core.types import validate_conversation
+from agentkit.llm.base import StreamChunk, ToolCallDelta
 from agentkit.runtime.engine import Engine, collect
 from agentkit.tools.base import ToolSpec
 from agentkit.tools.registry import ToolRegistry
@@ -50,11 +51,13 @@ class TestHappyPath:
         engine = _make_engine(model, workspace, ToolRegistry())
 
         events = await _drain(engine, "你好")
+        # usage 随最后一个 chunk 到达，所以它排在正文增量之后——
+        # 这正是 provider 的实际行为（实测确认 usage 只在收尾 chunk 里出现）。
         assert _event_types(events) == [
             "run_started",
             "step_started",
-            "usage_reported",
             "text_delta",
+            "usage_reported",
             "run_completed",
         ]
         assert events[-1].text == "直接回答"
@@ -74,16 +77,42 @@ class TestHappyPath:
         assert types == [
             "run_started",
             "step_started",
+            # 第一轮只有工具调用，没有正文，所以没有 text_delta
             "usage_reported",
             "tool_call_started",
             "tool_result",
             "step_started",
-            "usage_reported",
             "text_delta",
+            "usage_reported",
             "run_completed",
         ]
         assert events[-1].text == "文件有三行"
         assert events[-1].steps == 2
+
+    async def test_text_is_streamed_incrementally(self, workspace):
+        """逐 token 的增量应当逐个变成事件，而不是攒成一条。"""
+        from .conftest import text_chunks
+
+        model = ScriptedModel(text_chunks("你好世界"))
+        events = await _drain(_make_engine(model, workspace, ToolRegistry()), "说点什么")
+
+        deltas = [e.text for e in events if e.type == "text_delta"]
+        assert deltas == ["你", "好", "世", "界"]
+        assert events[-1].text == "你好世界"
+
+    async def test_reasoning_is_streamed(self, workspace):
+        """思维链单独发事件——实测它可能占输出 token 的绝大多数，不能丢。"""
+        model = ScriptedModel(
+            [
+                StreamChunk(reasoning="让我"),
+                StreamChunk(reasoning="想想"),
+                StreamChunk(text="答案"),
+            ]
+        )
+        events = await _drain(_make_engine(model, workspace, ToolRegistry()), "问")
+
+        assert [e.text for e in events if e.type == "reasoning_delta"] == ["让我", "想想"]
+        assert events[-1].text == "答案"
 
     async def test_tool_result_reaches_the_model(self, workspace, read_tool):
         registry = ToolRegistry([read_tool])
@@ -150,17 +179,19 @@ class TestHappyPath:
         assert model.tool_schemas[0] is None
 
     async def test_generation_kwargs_are_forwarded(self, workspace):
-        class RecordingModel(ScriptedModel):
-            async def complete(self, *, messages, tools=None, tool_choice="auto", **kwargs):
-                self.kwargs = kwargs
-                return await super().complete(
-                    messages=messages, tools=tools, tool_choice=tool_choice
-                )
-
-        model = RecordingModel(assistant_text("好"))
-        engine = _make_engine(model, workspace, ToolRegistry(), temperature=0.7, max_tokens=512)
+        """生成参数要一路传到模型适配器——现在只有 stream() 这一条路径。"""
+        model = ScriptedModel(assistant_text("好"))
+        engine = _make_engine(
+            model, workspace, ToolRegistry(), temperature=0.7, max_tokens=512
+        )
         await _drain(engine, "你好")
-        assert model.kwargs == {"temperature": 0.7, "max_tokens": 512}
+        assert model.generation_kwargs[0] == {"temperature": 0.7, "max_tokens": 512}
+
+    async def test_unset_generation_params_are_not_sent(self, workspace):
+        """没设的参数不要传——传 None 会被一些 provider 当成非法值。"""
+        model = ScriptedModel(assistant_text("好"))
+        await _drain(_make_engine(model, workspace, ToolRegistry()), "你好")
+        assert model.generation_kwargs[0] == {}
 
 
 # ---------------------------------------------------------------- 错误回灌
@@ -189,7 +220,12 @@ class TestErrorFeedback:
         assert events[-1].text == "补上了"
 
     async def test_malformed_json_arguments_are_reflected(self, workspace):
-        """模型给出不是 JSON 的参数，原文要回灌让它重来。"""
+        """模型把参数拼成了坏 JSON，原文要回灌让它重来。
+
+        这里刻意用**流式片段**来构造坏 JSON，而不是直接塞一个预制好的
+        ``ToolUseBlock``——坏 JSON 是在累加器拼片段的时候才暴露出来的，
+        走真实的路径才测得到那段逻辑。
+        """
         registry = ToolRegistry()
 
         async def noop(ctx, x: str = "") -> str:
@@ -198,12 +234,18 @@ class TestErrorFeedback:
 
         registry.register(noop)
 
-        broken = Message.assistant(
-            ToolUseBlock(
-                id="c1", name="noop", input={}, raw_arguments='{"x": "unclosed'
-            )
+        model = ScriptedModel(
+            [
+                StreamChunk(
+                    tool_calls=[
+                        ToolCallDelta(index=0, id="c1", name="noop", arguments='{"x":')
+                    ]
+                ),
+                # 少了收尾的引号和花括号，拼出来不是合法 JSON
+                StreamChunk(tool_calls=[ToolCallDelta(index=0, arguments=' "unclosed')]),
+            ],
+            assistant_text("改了"),
         )
-        model = ScriptedModel(broken, assistant_text("改了"))
         events = await _drain(_make_engine(model, workspace, registry), "试试")
 
         result = next(e for e in events if e.type == "tool_result")
@@ -211,6 +253,42 @@ class TestErrorFeedback:
         assert "合法的 JSON" in result.content
         assert '{"x": "unclosed' in result.content
         assert events[-1].text == "改了"
+
+    async def test_fragmented_arguments_accumulate_correctly(self, workspace):
+        """正面用例：分片的参数拼得起来时，工具应当正常执行。
+
+        实测确认 DeepSeek 的 arguments 是**增量**语义（``''`` → ``'{'`` → ``'"'`` …），
+        这个用例固定住那条路径。
+        """
+        registry = ToolRegistry()
+
+        async def echo(ctx, file_path: str, encoding: str = "utf-8") -> str:
+            """回显参数。"""
+            return f"{file_path}|{encoding}"
+
+        registry.register(echo)
+
+        model = ScriptedModel(
+            [
+                StreamChunk(
+                    tool_calls=[
+                        ToolCallDelta(
+                            index=0, id="c1", name="echo", arguments='{"file_path":'
+                        )
+                    ]
+                ),
+                StreamChunk(
+                    tool_calls=[ToolCallDelta(index=0, arguments=' "/etc/hosts", "encoding"')]
+                ),
+                StreamChunk(tool_calls=[ToolCallDelta(index=0, arguments=': "utf-8"}')]),
+            ],
+            assistant_text("好了"),
+        )
+        events = await _drain(_make_engine(model, workspace, registry), "试试")
+
+        result = next(e for e in events if e.type == "tool_result")
+        assert not result.is_error
+        assert result.content == "/etc/hosts|utf-8"
 
     async def test_unknown_tool_is_reflected(self, workspace):
         model = ScriptedModel(

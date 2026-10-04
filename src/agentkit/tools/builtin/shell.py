@@ -24,7 +24,7 @@ from typing import Annotated
 from ...core.errors import ApprovalDenied, CommandDenied
 from .._util import truncate
 from ..base import ToolContext
-from ..policy import Verdict, assess_command
+from ..policy import ApprovalRequest, Verdict, assess_command
 from ..registry import ToolRegistry
 
 __all__ = ["register_shell_tools"]
@@ -49,15 +49,21 @@ async def run_command(
         # 而不是一条正常结果。
         raise CommandDenied(f"{assessment.reason}\n  命令: {command}")
 
-    if assessment.verdict is Verdict.REQUIRE_APPROVAL and not ctx.auto_approve:
-        # Phase 1 的占位：没有审批通道时如实告诉模型「需要人确认」，
-        # 让它要么换个做法，要么把这个需求作为最终答复交给人。
-        # Phase 2 会把这里换成发一个 ApprovalRequested 事件并等待结果。
-        raise ApprovalDenied(
-            f"命令需要人工审批，当前会话未开启审批通道。{assessment.reason}\n"
-            f"  命令: {command}\n"
-            "请改用允许清单内的命令，或把人需要做的这一步写进最终答复。"
+    if assessment.verdict is Verdict.REQUIRE_APPROVAL:
+        decision = await ctx.request_approval(
+            ApprovalRequest(
+                tool_name="run_command",
+                arguments={"command": command},
+                reason=assessment.reason,
+                command=command,
+            )
         )
+        if not decision:
+            raise ApprovalDenied(
+                f"命令未经批准，未执行。{assessment.reason}\n"
+                f"  命令: {command}\n"
+                "请改用允许清单内的命令，或把人需要做的这一步写进最终答复。"
+            )
 
     try:
         process = await asyncio.create_subprocess_shell(

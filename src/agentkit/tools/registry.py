@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any
 
 from ..core.errors import (
@@ -144,8 +145,13 @@ class ToolRegistry:
             # 参数不合法——把问题原样告诉模型，让它自己改。这是最该走回灌路径的一类错误。
             return result(str(exc), is_error=True)
 
+        # 复制一份上下文并填上本次调用的 id，而不是去改共享的那个 ctx——
+        # 审批要靠这个 id 关联「提出请求」和「收到决定」，而共享可变状态迟早出并发问题。
+        # state 字典是同一个引用，工具之间依旧可以共享进程内状态。
+        call_ctx = replace(ctx, tool_use_id=tool_use_id) if tool_use_id else ctx
+
         try:
-            output = await spec.fn(ctx, **args.model_dump())
+            output = await spec.fn(call_ctx, **args.model_dump())
         except RunCancelled:
             raise
         except (PolicyError, ToolError, AgentKitError) as exc:

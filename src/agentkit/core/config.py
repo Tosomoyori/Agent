@@ -62,7 +62,10 @@ class Settings(BaseSettings):
         description="单次回复的输出上限。None 表示用模型默认值。",
     )
     request_timeout: float = Field(default=120.0, validation_alias="LLM_TIMEOUT")
+    #: 总尝试次数（含首次）。1 表示不重试。
     max_retries: int = Field(default=3, validation_alias="LLM_MAX_RETRIES")
+    retry_base_delay: float = Field(default=0.5, validation_alias="LLM_RETRY_BASE_DELAY")
+    retry_max_delay: float = Field(default=30.0, validation_alias="LLM_RETRY_MAX_DELAY")
 
     # ------------------------------------------------------------ 运行时
 

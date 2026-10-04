@@ -26,17 +26,66 @@ import shlex
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import Any, Protocol, runtime_checkable
 
 from ..core.errors import CommandDenied, PathViolation
 
 __all__ = [
     "Verdict",
     "CommandAssessment",
+    "ApprovalRequest",
+    "ApprovalDecision",
+    "Approver",
     "resolve_in_workspace",
     "assess_command",
     "split_command_segments",
     "DEFAULT_ALLOWED_EXECUTABLES",
 ]
+
+
+# ============================================================ 审批协议
+
+
+@dataclass
+class ApprovalRequest:
+    """一个等待人工确认的动作。"""
+
+    tool_name: str
+    arguments: dict[str, Any]
+    reason: str
+    tool_use_id: str = ""
+    #: 如果是命令类工具，把命令原文单独放一份，便于审批界面高亮显示。
+    command: str | None = None
+
+
+@dataclass
+class ApprovalDecision:
+    """审批结果。"""
+
+    approved: bool
+    note: str = ""
+
+    @classmethod
+    def allow(cls, note: str = "") -> ApprovalDecision:
+        return cls(approved=True, note=note)
+
+    @classmethod
+    def deny(cls, note: str = "") -> ApprovalDecision:
+        return cls(approved=False, note=note)
+
+
+@runtime_checkable
+class Approver(Protocol):
+    """审批接口。
+
+    定义在这里而不是 ``runtime`` 里，是为了让 ``tools`` 只依赖这个协议、
+    **不 import runtime**，保持依赖方向单向。具体实现（控制台提问、SSE 队列等待、
+    自动放行）由 runtime 注入。
+    """
+
+    async def request(self, request: ApprovalRequest) -> ApprovalDecision:
+        """请求审批。实现方阻塞到有人做出决定为止。"""
+        ...
 
 
 # ============================================================ 路径边界

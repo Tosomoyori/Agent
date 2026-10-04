@@ -19,11 +19,11 @@ from agentkit.core.types import (
     ToolUseBlock,
 )
 from agentkit.llm.openai_compat import (
-    from_openai_message,
     normalize_usage,
     parse_tool_arguments,
     to_openai_messages,
     to_openai_tools,
+    to_stream_chunk,
 )
 
 
@@ -96,54 +96,115 @@ class TestToOpenAIMessages:
         assert roles == ["system", "user", "assistant", "tool", "assistant"]
 
 
-class TestFromOpenAIMessage:
-    def test_text_only(self):
-        message = from_openai_message(SimpleNamespace(content="hello", tool_calls=None))
-        assert message.role == "assistant"
-        assert message.text() == "hello"
-        assert message.tool_uses() == []
+class TestToStreamChunk:
+    """原始 SSE chunk → 归一化增量的转换。"""
+
+    def test_text_delta(self):
+        chunk = to_stream_chunk(
+            {"choices": [{"delta": {"content": "你好"}, "finish_reason": None}]}
+        )
+        assert chunk.text == "你好"
+        assert chunk.reasoning == ""
+        assert chunk.tool_calls == []
 
     def test_reasoning_content_is_picked_up(self):
-        """reasoning_content 在 pydantic 的 model_extra 里，不在标准字段上。"""
-        raw = SimpleNamespace(
-            content="答复", tool_calls=None, model_extra={"reasoning_content": "想想"}
+        """reasoning_content 不在标准字段上，SDK 会把它放进 model_extra。"""
+        chunk = to_stream_chunk(
+            {"choices": [{"delta": {"reasoning_content": "让我想想"}}]}
         )
-        message = from_openai_message(raw)
-        assert message.reasoning_text() == "想想"
-        assert message.text() == "答复"
+        assert chunk.reasoning == "让我想想"
 
-    def test_tool_calls_parsed_into_blocks(self):
-        raw = SimpleNamespace(
-            content=None,
-            reasoning_content=None,
-            tool_calls=[
-                SimpleNamespace(
-                    id="c1",
-                    function=SimpleNamespace(
-                        name="read_file", arguments='{"file_path": "a.txt"}'
-                    ),
-                )
-            ],
+    def test_finish_reason_captured(self):
+        chunk = to_stream_chunk(
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
         )
-        message = from_openai_message(raw)
-        uses = message.tool_uses()
-        assert len(uses) == 1
-        assert uses[0].name == "read_file"
-        assert uses[0].input == {"file_path": "a.txt"}
-        assert uses[0].raw_arguments is None
+        assert chunk.finish_reason == "tool_calls"
 
-    def test_missing_tool_call_id_gets_generated(self):
-        raw = SimpleNamespace(
-            content=None,
-            reasoning_content=None,
-            tool_calls=[
-                SimpleNamespace(
-                    id=None, function=SimpleNamespace(name="f", arguments="{}")
-                )
-            ],
+    def test_absent_finish_reason_stays_none(self):
+        """大多数 chunk 没有 finish_reason，不能把它记成 None 值以外的任何东西。"""
+        chunk = to_stream_chunk({"choices": [{"delta": {"content": "x"}}]})
+        assert chunk.finish_reason is None
+
+    def test_tool_call_delta(self):
+        chunk = to_stream_chunk(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"file_path"',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
         )
-        uses = from_openai_message(raw).tool_uses()
-        assert uses[0].id.startswith("call_")
+        assert len(chunk.tool_calls) == 1
+        delta = chunk.tool_calls[0]
+        assert delta.index == 0
+        assert delta.id == "call_1"
+        assert delta.name == "read_file"
+        assert delta.arguments == '{"file_path"'
+
+    def test_continuation_delta_leaves_id_and_name_none(self):
+        """实测行为：id / name 只在首个增量出现，后续 chunk 完全没有这两个字段。
+
+        保持 None 是刻意的——累加器据此知道"这次没有新值"，而不是把 id 覆盖成空串。
+        """
+        chunk = to_stream_chunk(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": ': "a.txt"}'}}
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        assert chunk.tool_calls[0].id is None
+        assert chunk.tool_calls[0].name is None
+        assert chunk.tool_calls[0].arguments == ': "a.txt"}'
+
+    def test_usage_only_chunk_has_empty_choices(self):
+        """实测行为：带 usage 的收尾 chunk，choices 是**空列表**，不是缺字段。
+
+        当成"没有内容"丢掉就会永远拿不到 usage。
+        """
+        chunk = to_stream_chunk(
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 300,
+                    "completion_tokens": 40,
+                    "prompt_cache_hit_tokens": 200,
+                    "completion_tokens_details": {"reasoning_tokens": 10},
+                },
+            }
+        )
+        assert chunk.usage is not None
+        assert chunk.usage.input_tokens == 300
+        assert chunk.usage.cached_input_tokens == 200
+        assert chunk.usage.reasoning_tokens == 10
+
+    def test_usage_attached_to_a_normal_chunk(self):
+        chunk = to_stream_chunk(
+            {
+                "choices": [{"delta": {"content": "x"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 1},
+            }
+        )
+        assert chunk.text == "x"
+        assert chunk.usage is not None and chunk.usage.input_tokens == 5
 
 
 class TestParseToolArguments:

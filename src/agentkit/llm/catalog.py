@@ -35,6 +35,8 @@ KNOWN_MODELS: dict[str, ModelCapabilities] = {
         # 有 effort 档位（low/high/max），走 extra_body 传
         reasoning=True,
         image_input=True,
+        # 实测：不传 stream_options 也会下发 usage（OpenAI 需要显式开）
+        usage_in_stream=True,
     ),
     "deepseek-v4-pro": ModelCapabilities(
         context_window=1_048_576,
@@ -46,6 +48,7 @@ KNOWN_MODELS: dict[str, ModelCapabilities] = {
         json_object=True,
         reasoning=True,
         image_input=False,
+        usage_in_stream=True,
     ),
 }
 

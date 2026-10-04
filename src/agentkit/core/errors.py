@@ -17,6 +17,12 @@ class AgentKitError(Exception):
     #: 该错误是否值得重试。子类按需覆盖。
     retryable: bool = False
 
+    #: 服务端要求的重试等待秒数（来自 ``Retry-After`` / ``retry-after-ms`` 响应头）。
+    #: 由 provider 适配器在映射错误时填上；``None`` 表示服务端没提要求，
+    #: 由重试策略自己算退避。定义在基类上是为了让重试层能统一读它，
+    #: 不必去翻各家的原始异常。
+    retry_after: float | None = None
+
 
 class ConfigurationError(AgentKitError):
     """配置缺失或非法，例如没有提供 API Key。"""

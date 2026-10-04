@@ -26,6 +26,7 @@ traces/
 *.db
 *.sqlite3
 checkpoints/
+.agentkit/
 
 # 评测报告
 eval_reports/
