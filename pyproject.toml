@@ -42,8 +42,6 @@ addopts = "-m 'not live'"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# legacy/ 是改造前的原始实现，刻意保持原样作为 before/after 对照，不参与 lint。
-extend-exclude = ["legacy"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
