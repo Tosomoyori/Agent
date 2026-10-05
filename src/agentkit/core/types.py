@@ -1,8 +1,8 @@
 """内容块消息模型——全项目的地基。
 
-为什么不直接用 OpenAI 的 ``tool_calls[]`` + ``role: "tool"``？
+不采用 OpenAI 的 ``tool_calls[]`` + ``role: "tool"`` 形状。
 
-因为那只是 OpenAI 一家的形状。Anthropic 的 ``tool_use`` / ``tool_result`` 是
+该形状只是 OpenAI 一家约定。Anthropic 的 ``tool_use`` / ``tool_result`` 是
 assistant / user 消息内部的 content block，**没有独立的 ``tool`` role**，而且同一轮里的
 每个 ``tool_use`` 都必须在紧随其后的那条 user 消息里找到配对的 ``tool_result``。
 
@@ -159,7 +159,7 @@ class Message(BaseModel):
 def validate_conversation(messages: Sequence[Message]) -> None:
     """强制消息序列的配对不变量，违反时抛 :class:`InvalidConversation`。
 
-    规则（来自 Anthropic 的硬约束，我们对内部模型统一施加，这样换任何 provider 都不会踩）：
+    规则（来自 Anthropic 的硬约束，本框架对内部模型统一施加，因此更换 provider 不会触发该问题）：
 
     1. 每个 ``tool_use`` 都必须在**紧随其后**的那条 user 消息里找到 ``tool_result``；
     2. 不允许出现没有对应 ``tool_use`` 的孤儿 ``tool_result``；

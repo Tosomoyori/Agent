@@ -1,32 +1,31 @@
-# ADR 0009：自研内核 + LangChain 适配层，而不是直接用 LangChain
+# ADR 0009：自研内核 + LangChain 适配层
 
 **状态**：已采纳
 
 ## 问题
 
-JD 写着「熟悉 LangChain、LlamaIndex、CrewAI 等**至少一种** Agent 开发框架」。
-那为什么要从零实现一遍，而不是直接用 LangChain / LangGraph？
+Agent 开发框架（LangChain / LangGraph、LlamaIndex、CrewAI 等）已相当成熟。
+本项目应当基于现有框架构建，还是从零实现？
 
-## 先说清楚一件事
+## 前提：两个独立的主张
 
-**「自研框架」和「熟悉 LangChain」是两个不同的主张，前者推不出后者。**
+**「实现过框架」与「熟悉某个框架」是两个不同的主张，前者推不出后者。**
 
 | | 自研能证明 | 自研不能证明 |
 | --- | --- | --- |
-| 机制理解 | ReAct 循环、消息模型、取消传播、崩溃恢复怎么实现 | — |
-| 生态经验 | — | `Runnable` 协议、`BaseChatModel` 契约、tool binding、LCEL 怎么用 |
+| 机制理解 | ReAct 循环、消息模型、取消传播、崩溃恢复的实现方式 | — |
+| 生态经验 | — | `Runnable` 协议、`BaseChatModel` 契约、tool binding、LCEL |
 
-一个人可以从零写出 agent 循环，同时完全没用过 LangChain 的 `bind_tools`。
-反过来也成立。所以如果只做自研，在「熟悉框架」这条上就是**空白**——
-面试时解释「我为什么不用」回答的是另一个问题。
+可以独立实现 agent 循环而从未使用过 LangChain 的 `bind_tools`，反之亦然。
+因此「纯自研」方案在生态经验一项上没有产出。
 
 ## 选项
 
-**A. 直接用 LangGraph / LangChain 构建。** 快，生态现成，简历上直接写得出框架名。
+**A. 基于 LangGraph / LangChain 构建。** 开发快，生态现成，可直接使用框架名。
 
-**B. 纯自研，不碰任何框架。** 机制讲得最透，但「熟悉框架」这条空白。
+**B. 纯自研，不引入框架。**
 
-**C. 自研内核 + 薄适配层。** 核心自己写，另外提供与 LangChain 的双向互操作。
+**C. 自研内核 + 薄适配层。** 核心自行实现，另外提供与 LangChain 的双向互操作。
 
 ## 决定
 
@@ -34,56 +33,50 @@ JD 写着「熟悉 LangChain、LlamaIndex、CrewAI 等**至少一种** Agent 开
 
 ## 理由
 
-**为什么不选 A。** 用 LangGraph 能讲的是「我怎么用了这个框架」，
-讲不清它的调度细节——checkpointer 什么时候落盘、`interrupt` 怎么恢复、
-状态图怎么合并。而这些恰恰是面试官会往下追问的地方。
-用一个框架做出东西，证明的是**会用**；从零做出来，证明的是**懂机制**。
-这个岗位的 JD 里写的是「参与 Agent 基础开发框架的**建设**」，
-要的是后者。
+### 否决 A
 
-**为什么不选 B。** 上面已经说了：「熟悉框架」这条会空白，
-而这恰恰是 JD 明写的。而且纯自研还有个隐性代价——
-你没法判断自己的抽象设计得好不好，因为没有参照物。
+使用 LangGraph 可获得的是「如何使用该框架」的经验，无法获得其调度细节的经验：
+checkpointer 的落盘时机、`interrupt` 的恢复语义、状态图的合并规则。
+这些恰是深入评审时会被追问的部分。
 
-**选 C 的收益是双向的：**
+在框架之上构建证明的是**会用**，从零构建证明的是**懂机制**。
+本项目的目标是验证后者。
 
-* 自研内核 → 机制讲得透（见 ADR 0001–0008，每一条都是实现层面的决策）；
-* 适配层 → 生态接得上，且「熟悉框架」有了**可验证**的证据
-  （[`integrations/langchain.py`](../../src/agentkit/integrations/langchain.py)
-  有 28 个测试，能真的跑 `bind_tools`、进 LCEL 管道、被 LangChain 的 agent 调用）。
+### 否决 B
 
-**还有一个只有 C 才有的收益：适配层是抽象设计的试金石。**
+除「生态经验」一项无产出外，纯自研还有一个隐性代价：
+**缺少参照物，无法判断自身抽象设计的质量。**
 
-如果 `ChatModel` / `ToolSpec` 的抽象是干净的，包一层 LangChain 接口应该只需要
-做**格式转换**，一行核心代码都不用改。如果需要改 `runtime` 或 `core` 才能适配，
-说明抽象漏了东西。
+### 采用 C 的收益
 
-这一层的实际结果是：它只 import 了 `agentkit.core` / `agentkit.llm` /
-`agentkit.tools`，**没有碰 `runtime`**。这是「分层没白分」的一个可验证的证据——
-比嘴上说「我的架构很清晰」有力得多。
+**双向收益：**
+
+- 自研内核 → 机制层面可追溯（见 ADR 0001–0008，均为实现层面的决策）；
+- 适配层 → 生态可接入，且「熟悉框架」有**可验证**的证据：
+  [`integrations/langchain.py`](../../src/agentkit/integrations/langchain.py)
+  有 28 个测试，覆盖 `bind_tools`、LCEL 管道、以及被 LangChain agent 调用。
+
+**此外，适配层构成对抽象设计的检验。**
+
+若 `ChatModel` / `ToolSpec` 的抽象足够清晰，包装一层 LangChain 接口应当只需做
+**格式转换**，无需修改任何核心代码。若需要修改 `runtime` 或 `core` 才能适配，
+则说明抽象存在缺陷。
+
+实际结果：该层只 import 了 `agentkit.core` / `agentkit.llm` / `agentkit.tools`，
+**未涉及 `runtime`**。这是分层设计成立的可验证证据。
 
 ## 代价
 
-* **多维护一层**。LangChain 是大版本演进很快的项目（写这份文档时是 1.4.x），
-  适配层要跟着改；
-* **适配有信息损耗**。LangChain 的工具没有「注入上下文」这个概念，
-  所以 AgentKit 的 `ToolContext` 在转换时被固定成一个具体的工作区
-  （见 `to_langchain_tools` 的 `workspace` 参数）——这是个有损映射，
-  文档里写清楚了；
-* **可选的依赖也是依赖**。所以做成 extra（`uv sync --extra langchain`），
-  核心项目零 LangChain 依赖，`importorskip` 保证没装的人跑测试不受影响。
+- **额外维护成本**。LangChain 版本演进较快（当前为 1.4.x，langchain-core 1.6.x），
+  适配层需跟进；
+- **适配存在信息损耗**。LangChain 的工具没有「注入上下文」概念，因此 AgentKit 的
+  `ToolContext` 在转换时被固定为一个具体工作区
+  （见 `to_langchain_tools` 的 `workspace` 参数）。该映射是有损的，已在文档中说明；
+- **可选依赖也是依赖**。因此实现为 extra（`uv sync --extra langchain`），
+  核心包零 LangChain 依赖，`importorskip` 保证未安装该 extra 时测试套件不受影响。
 
-## 面试怎么答这个问题
+## 相关
 
-> 「JD 要求熟悉至少一种框架，我是这么处理的：核心用自研，因为我更想讲清楚
-> ReAct 循环、消息模型、取消传播这些机制是怎么实现的；同时写了 LangChain 的
-> 双向适配层——我的模型能 `bind_tools`、能进 LCEL 管道，LangChain 生态的工具
-> 也能接进我的注册表。
->
-> 让我选一个的话，纯用 LangGraph 我能讲「怎么用」，但讲不了它的调度细节；
-> 自研加适配层，两边都能讲。而且适配层本身是个检验——它只依赖我的 core/llm/tools
-> 三层，没碰 runtime，说明分层没白分。」
-
-**不要贬低现成框架。** 说「LangChain 太重所以我不用」是错的判断力信号——
-框架解决的是另一类问题（生态、多 provider、快速验证），
-选不选它取决于场景，不是谁更高级。
+- 适配层的双向能力与三个映射差异见
+  [`integrations/langchain.py`](../../src/agentkit/integrations/langchain.py) 的模块文档
+- 可运行示例：[examples/langchain_interop.py](../../examples/langchain_interop.py)

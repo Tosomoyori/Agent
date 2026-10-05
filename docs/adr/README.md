@@ -2,10 +2,10 @@
 
 这里记录的是**做过的技术决策**：问题是什么、有哪些选项、选了什么、**代价是什么**。
 
-写 ADR 而不是写设计文档，是因为设计文档只讲「现在长什么样」，
-而 ADR 保留「当时为什么不选另一条路」。面试里被追问的几乎全是后者。
+ADR 记录的是决策过程：设计文档说明系统当前形态，ADR 保留各种被否决的替代方案
+及其否决理由。评审与后续维护中需要追溯的通常是后者。
 
-每份 ADR 的「代价」一节是刻意的——没有代价的决策通常意味着没想清楚。
+每份 ADR 均包含「代价」一节。未记录代价的决策通常意味着评估不充分。
 
 | 编号 | 决策 | 一句话 |
 | --- | --- | --- |
@@ -22,6 +22,6 @@
 ## 相关的其他文档
 
 - [docs/provider-notes.md](../provider-notes.md) —— 实测出来的 provider 流式行为
-- [docs/evaluation-notes.md](../evaluation-notes.md) —— 评测结果，以及判据写错五次的记录
-- [docs/memory-design.md](../memory-design.md) —— 记忆系统做到哪、为什么停在这
-- [docs/a2a-scope.md](../a2a-scope.md) —— Agent 发现做到哪、为什么停在这
+- [docs/evaluation.md](../evaluation.md) —— 评测设置、结果、判据设计约束与局限
+- [docs/memory-design.md](../memory-design.md) —— 记忆系统的实现范围与取舍
+- [docs/a2a-scope.md](../a2a-scope.md) —— Agent 发现能力的实现范围与取舍

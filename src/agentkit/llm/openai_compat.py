@@ -127,7 +127,7 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     """从 pydantic 对象或 dict 里取字段。
 
     OpenAI SDK 返回的是 pydantic 模型，扩展字段（如 ``reasoning_content``）
-    落在 ``model_extra`` 里；测试里我们喂的是原始 dict。两种都要能读。
+    落在 ``model_extra`` 里；测试中传入的是原始 dict。两种形式都需要支持。
     """
     if obj is None:
         return default
@@ -244,8 +244,8 @@ def normalize_usage(raw: Any) -> Usage:
 def extract_retry_after(exc: Exception) -> float | None:
     """从 SDK 异常的响应头里读出服务端要求的等待秒数。
 
-    BUG 教训：不提取这个值，重试就变成"自己猜退避"——服务端说 30 秒后再来，
-    客户端 1 秒后重试 5 次，既没用又白烧配额。
+    不提取该值时，退避间隔只能由客户端估算：服务端要求 30 秒后重试，
+    客户端可能在 1 秒内重试 5 次，既无效又消耗配额。
     """
     response = getattr(exc, "response", None)
     headers = getattr(response, "headers", None)

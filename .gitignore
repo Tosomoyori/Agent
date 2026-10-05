@@ -41,5 +41,8 @@ Thumbs.db
 .cursor/
 .aider/
 
+# 个人工作笔记：面试准备、踩坑复盘。不属于项目报告，不进仓库。
+notes/
+
 # 日志
 *.log

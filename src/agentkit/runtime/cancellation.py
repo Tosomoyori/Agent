@@ -1,6 +1,6 @@
 """run 级取消。
 
-**为什么不能只靠 ``asyncio.CancelledError``：**
+**仅依赖 ``asyncio.CancelledError`` 的不足：**
 
 1. 取消要能**传进工具**。工具在子进程里跑（``run_command``），或者在做分块 IO，
    光取消外层 task 会让子进程变成孤儿，一直占着资源。

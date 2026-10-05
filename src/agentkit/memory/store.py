@@ -1,12 +1,12 @@
 """SQLite 持久化。
 
-**为什么消息整条存 JSON 而不拆成关系表。** 内容块是个判别联合
+**消息以 JSON 整体存储，不拆分为关系表。** 内容块是个判别联合
 （text / reasoning / tool_use / tool_result），拆成列意味着每加一种块类型就要改
 表结构、改读写代码、写迁移。而 ``Message`` 已经是 pydantic 模型，序列化/反序列化
 本来是免费的。代价是没法用 SQL 直接查「所有包含某个工具的调用」——那种分析
 走 :mod:`agentkit.observability` 的事件日志更合适，不该让事务库承担。
 
-**为什么这个类是同步的。** SQLite 的本地文件读写在这个数据量下是微秒级的，
+**本类采用同步接口。** SQLite 的本地文件读写在这个数据量下是微秒级的，
 为它引入一整套异步接口不划算。但**不能在事件循环里直接调**——单条消息虽小，
 一台机器上几百个并发 run 叠起来照样会卡住循环。所以 :class:`~agentkit.memory.manager.MemoryManager`
 统一用 ``asyncio.to_thread`` 包一层，把这里的同步语义关在那一层里。
@@ -16,9 +16,9 @@
 调用方。所以这里配了一把锁，把所有访问串行化。SQLite 本身在写操作上就是串行的，
 加锁不损失实际吞吐，却能保证跨线程调用不会静默损坏数据。
 
-（这条是补上的：最初的版本只想着用 ``to_thread`` 挪走阻塞，忘了连接是在主线程
-建的，一跑就报 "SQLite objects created in a thread can only be used in that
-same thread"。测试逮住了它。）
+**约束**：``check_same_thread=False`` 关闭了 sqlite3 的线程归属检查，
+调用方必须自行保证串行访问。该保证由下面的锁提供——缺少它时，
+跨线程访问会抛出 ``ProgrammingError``，而非静默损坏数据。
 """
 
 from __future__ import annotations

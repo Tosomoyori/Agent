@@ -541,10 +541,10 @@ class _Unused:
 
 class TestApprovalCorrelation:
     async def test_tool_use_id_is_filled_in_automatically(self, workspace):
-        """工具作者忘了填 tool_use_id 时，上下文要替他补上。
+        """工具未填写 tool_use_id 时，由上下文补齐。
 
-        这条不是假想的边界情况——最初的 ``run_command`` 就漏了它，起服务后跑一个
-        需要审批的命令，服务端会用一个客户端无从得知的兜底 key 挂起，run 无声卡死。
+        该字段缺失时，服务端会使用一个客户端无法获知的兜底键挂起审批，
+        run 随之静默停滞。因此该补齐逻辑是必要路径，而非边界情况的防御。
         """
         registry = ToolRegistry()
 

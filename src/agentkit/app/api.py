@@ -1,6 +1,6 @@
 """HTTP 服务：SSE 流式、取消、审批、trace、agent 发现。
 
-**为什么 run 是异步的、事件要单独拉。** 一个 run 可能跑几十秒。如果 POST 直接挂着
+**run 采用异步模型，事件单独拉取。** 一个 run 可能跑几十秒。如果 POST 直接挂着
 返回结果，中途就没法取消、没法审批、断线也没法续。所以：POST 立刻返回 run_id，
 事件走 SSE，审批和取消是独立的端点——三件事各自独立，任何一个卡住都不影响其余。
 
@@ -9,7 +9,7 @@
 :mod:`agentkit.core.events` 里那个 ``seq`` 字段存在的理由——不是为了好看。
 
 **审批是两段式的。** 引擎的 ``ApprovalRequested`` 事件推给客户端，客户端
-POST 决定回来，工具才继续执行。这就是为什么引擎的事件得走队列而不是直接 yield
+POST 决定回来，工具才继续执行。引擎事件经由队列而非直接产出，即出于此
 （见 :mod:`agentkit.runtime.bus`）。
 """
 
@@ -517,7 +517,7 @@ def _format_sse(event: RunEvent) -> bytes:
     """序列化成 SSE 帧。
 
     同时写 ``id:`` 行——浏览器原生 ``EventSource`` 重连时会自动带上
-    ``Last-Event-ID`` 头，服务端据此续传。我们自己也提供 ``from_seq`` 参数，
+    ``Last-Event-ID`` 头，服务端据此续传。本服务同时提供 ``from_seq`` 参数，
     两条路都能走。
     """
     payload = json.dumps(event.model_dump(), ensure_ascii=False)

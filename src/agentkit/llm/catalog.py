@@ -7,11 +7,11 @@ DeepSeek 侧的数据来自 2026-10-05 实测 ``GET https://api.deepseek.com/mod
     deepseek-flash    DeepSeek-V4.1-Flash  ctx=1048576  max_out=393216  in=[text,image]
     deepseek-v4-pro   DeepSeek-V4-Pro      ctx=1048576  max_out=393216  in=[text]
 
-两者都带 ``effort`` 档位（low / high / max，默认 high）。
+两者均支持 ``effort`` 档位（low / high / max，默认 high）。
 
-**这件事本身就是为什么要建目录**：项目原本硬编码 ``deepseek-chat``，而该模型已经
-下线——`/models` 现在根本不返回它。模型名是会变的，能力也会变，所以「模型能力」
-必须是一份可查、可覆盖的数据，而不是散落在代码里的 if-else。
+**模型能力必须以可查数据的形式存在。** 模型名与能力会随上游变更，
+将其散落在代码中的条件分支里会导致升级时出现难以定位的失效。
+本目录是唯一的查询入口，且允许调用方覆盖。
 """
 
 from __future__ import annotations

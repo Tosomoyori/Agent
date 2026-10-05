@@ -53,7 +53,7 @@
 * 要维护一份「provider 行为表」，provider 改协议要跟进；
 * 实测出来的结论有时效性——`docs/provider-notes.md` 里标了测量日期，复查时先重跑脚本。
 
-## 为什么不用现成的 OpenAI SDK 直接读
+## 未使用 SDK 直接解析的原因
 
 SDK 给的是 raw delta，**不做语义归一化**。它不知道 `id` 是赋值而 `arguments`
 是追加，也不知道 usage 可能藏在一个 `choices` 为空的收尾 chunk 里。这些判断

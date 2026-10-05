@@ -8,9 +8,8 @@
 所以：**只有这里决定发给模型的消息序列**。runtime 把 system 提示词和用户输入交给它，
 它负责取历史、裁剪、加摘要、装配成一个 :class:`ContextWindow`。
 
-本模块只做「working memory + 持久化」。语义记忆、情节记忆与记忆整合
-（consolidation）**刻意没做**——那份设计写在了 ``docs/memory-design.md`` 里，
-因为「我知道它是什么、为什么没做」比一个半成品更值得放进作品集。
+本模块只实现 working memory 与持久化。语义记忆、情节记忆与记忆整合
+（consolidation）未实现，取舍与后续路径见 ``docs/memory-design.md``。
 """
 
 from __future__ import annotations

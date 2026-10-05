@@ -46,8 +46,7 @@ class AgentCapabilities(BaseModel):
 class AgentSkill(BaseModel):
     """一项能力。发现机制真正匹配的对象是它，不是 agent 本身。
 
-    ``tags`` 和 ``examples`` 是给**调用方**（可能是人或另一个 agent）判断
-    「这个 agent 能不能干我这活」用的。
+    ``tags`` 与 ``examples`` 供**调用方**（人或另一个 agent）判断能力匹配度。
     """
 
     id: str

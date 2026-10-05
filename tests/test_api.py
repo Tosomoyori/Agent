@@ -443,5 +443,5 @@ class TestConsole:
         ):
             assert not re.search(pattern, html), f"控制台里出现了危险的 HTML 注入写法: {pattern}"
 
-        # 确认它确实用 textContent 渲染，否则上面几条可能只是因为什么都没写
+        # 确认确实使用 textContent 渲染，否则上述检查可能仅因未实现任何渲染而通过
         assert html.count("textContent") > 10

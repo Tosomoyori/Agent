@@ -28,7 +28,7 @@
 ## 三个必须处理的映射差异
 
 1. **工具结果的位置**。AgentKit 内部它属于 user 消息里的 content block（与 Anthropic
-   一致），LangChain 用独立的 ``ToolMessage``。和我们转 OpenAI 时是同一个问题。
+   一致），LangChain 用独立的 ``ToolMessage``。与转 OpenAI 时属于同一问题。
 2. **思维链**。LangChain 没有 reasoning 这个概念，provider 私有的东西放
    ``additional_kwargs``。DeepSeek 的 ``reasoning_content`` 走这里，
    而且**必须原样回传**，否则多轮工具调用时 API 返回 400。

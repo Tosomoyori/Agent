@@ -26,7 +26,7 @@ A 有两个问题，而且都很致命：
 
 **必然漏。** `rm -rf` 的等价写法有无穷多：`rm -r -f`、`rm${IFS}-rf`、
 `rm -f -r`、`python -c "import shutil; shutil.rmtree(...)"`、
-PowerShell 里的一堆等价形式。黑名单只能拦住**你已经想到的**那些。
+PowerShell 里的一堆等价形式。黑名单只能覆盖**已知的**变体。
 
 **会误杀。** `echo "rm -rf /"` 只是打印一段字符串，黑名单会把它拦下来。
 这在 agent 场景里不是小事——工具被莫名其妙拦住，模型会反复重试。
@@ -64,7 +64,7 @@ B 的默认方向也更重要：**默认不信任**。看不明白的一律转�
 
 ## 顺带修掉的一个真实漏洞
 
-第一版的路径边界检查用 `os.path.abspath` + `startswith`：
+另一种常见做法是使用 `os.path.abspath` + `startswith` 做路径边界检查，存在两个问题：
 
 * `abspath` **不解析符号链接**——工作区内放一个指向 `C:\Windows\System32` 的
   symlink，检查照样通过，实际写到了外面；
