@@ -14,6 +14,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# LangChain 互操作层。核心项目不依赖它——只有想接 LangChain 生态时才需要。
+langchain = ["langchain>=1.0"]
+
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

@@ -1,6 +1,8 @@
 # AgentKit
 
-从零实现的 Agent 开发框架。核心循环、工具层、记忆、评测、可观测性全部自研，不依赖 LangChain 等现成框架。
+从零实现的 Agent 开发框架。核心循环、工具层、记忆、评测、可观测性全部自研，
+另附 [LangChain 互操作层](docs/adr/0009-from-scratch-versus-framework.md)——
+既能把 AgentKit 的模型和工具接进 LangChain 生态，也能反向把 LangChain 的工具接进来。
 
 > **状态**：全部阶段完成 —— 内核、流式、取消、预算、审批、记忆、可观测性、
 > HTTP 服务、Web 控制台、Agent 发现与评测。
@@ -39,8 +41,10 @@
 
 ## 设计取舍
 
-从零实现，不套 LangChain / LlamaIndex。目标是能把 Agent 的每个机制讲清楚，而不是会用某个
-框架的 API。代价是持久化、可观测、重试这些都要自己写——这个取舍是清醒的，不是没评估过。
+核心从零实现，另附 LangChain 互操作层。目标是能把 Agent 的每个机制讲清楚，
+而不是只会用某个框架的 API；同时保留与生态的双向互通。
+完整的取舍（包括为什么不用 LangGraph、代价是什么、面试怎么答）见
+[ADR 0009](docs/adr/0009-from-scratch-versus-framework.md)。
 
 几个关键决策：
 
@@ -67,6 +71,7 @@
 
 ```bash
 uv sync --extra dev          # 建 .venv 并装依赖
+uv sync --extra langchain    # 可选：需要 LangChain 互操作时才装
 cp .env.example .env         # 填入 DEEPSEEK_API_KEY
 uv run agentkit --help
 ```

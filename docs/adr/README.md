@@ -17,6 +17,7 @@
 | [0006](0006-command-policy.md) | 命令安全用三分裁决 | 黑名单必然漏也会误杀；并明确承认允许清单不是沙箱 |
 | [0007](0007-retry-policy.md) | 重试只在首个 chunk 之前 | 已吐出的内容收不回来；SDK 重试必须关掉否则次数相乘 |
 | [0008](0008-evaluation-metrics.md) | 主指标用 pass^k 和状态判据 | pass@k 衡量潜力，pass^k 衡量可靠性，上线的关键是后者 |
+| [0009](0009-from-scratch-versus-framework.md) | 自研内核 + LangChain 适配层 | 「自研」推不出「熟悉框架」，这是两个主张；适配层还是抽象设计的试金石 |
 
 ## 相关的其他文档
 
