@@ -23,6 +23,20 @@
 **我自己的判据错了五次**的记录，见 [docs/evaluation-notes.md](docs/evaluation-notes.md)——
 那份文档比这里的数字更有价值。
 
+## 性能数字
+
+`scripts/loadtest.py`，并发 1 / 5 / 10 各跑 8 次，共 24 次真实调用，零失败：
+
+| 并发 | 吞吐 | 总延迟 P50 / P95 | 引擎耗时 P50 |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.52 /s | 1954 / 2223 ms | 1945 ms |
+| 5 | 1.70 /s | 1969 / 2532 ms | 1945 ms |
+| 10 | 3.58 /s | 1818 / 2182 ms | 1780 ms |
+
+**延迟不随并发上升**（P50 平在 1.9 秒），说明框架内部没有排队或争用。
+**引擎耗时与总延迟差约 9 ms**——框架自身开销不到 1%，99.5% 的时间在等模型。
+边界说明（哪些没测）见 [docs/performance.md](docs/performance.md)。
+
 ## 设计取舍
 
 从零实现，不套 LangChain / LlamaIndex。目标是能把 Agent 的每个机制讲清楚，而不是会用某个
@@ -82,6 +96,38 @@ uv run agentkit eval eval_suites --mode live -n 5   # 真实评测，会产生�
 一条明确的错误，把这一步交回给人，而不是反复重试。非交互场景加 `--no-approve`
 直接拒绝所有需要审批的动作——**默认拒绝，不是默认放行**。
 
+## 演示路径
+
+面试里让你现场演示时，按这个顺序走，从「能跑」到「有深度」：
+
+```bash
+# 1. 十秒钟看到它能干活
+uv run agentkit run "统计 src 下有多少个 .py 文件"
+
+# 2. 流式：能看清它每一步在做什么
+uv run agentkit run "读一下 README.md 的前 20 行并总结" --show-reasoning
+
+# 3. 记忆：第二轮记得第一轮说过的话
+uv run agentkit run "我叫小明" --session demo
+uv run agentkit run "我叫什么？" --session demo
+
+# 4. 安全：需要审批的命令会被拦下来，而不是偷偷执行
+printf 'n
+' | uv run agentkit run "用 run_command 执行 mkdir testdir" --groups shell
+
+# 5. 服务 + 控制台：实时看推理链路、工具调用、审批与 trace 树
+uv run agentkit serve
+#   浏览器打开 http://127.0.0.1:8000/
+#   A2A 卡片  curl http://127.0.0.1:8000/.well-known/agent-card.json
+
+# 6. 评测：先自检框架（零成本），再跑真实评测
+uv run agentkit eval eval_suites --mode hermetic
+uv run agentkit eval eval_suites --mode live --trials 5
+```
+
+第 4 步是整个项目最值得演示的一处：命令被拒绝之后，模型不会死循环重试，
+而是把这一步交回给人——「因此这一步需要你手动完成，二选一：…」。
+
 ## 项目结构
 
 ```
@@ -106,8 +152,8 @@ src/agentkit/
 - [x] **Phase 2** 流式、工具策略与异步审批、预算、取消、工作记忆
 - [x] **Phase 3** 可观测性（`gen_ai.*` span）+ FastAPI SSE 服务 + Web 控制台 + Agent 发现
 - [x] **Phase 4** 评测：任务成功率 / 工具正确性 / pass^k / 成本
-- [ ] **Phase 5** 文档、ADR、压测数据
-- [ ] **Phase 5** 文档、ADR、压测数据
+- [x] **Phase 5** 文档、ADR、压测数据
+- [x] **Phase 5** 文档、ADR、压测数据
 
 ## 开发
 
@@ -128,4 +174,5 @@ uv run ruff check .          # 静态检查
 
 ## 能力边界
 
-刻意没做的事，以及理由，写在 `docs/adr/` 里。宁可说清楚「这个我知道但评估后没做」，也不放一个半成品进去。
+刻意没做的事，以及理由，写在 [docs/adr/](docs/adr/) 与上面几份文档里。
+宁可说清楚「这个我知道但评估后没做」，也不放一个半成品进去。
