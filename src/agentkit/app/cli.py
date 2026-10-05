@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_parser(subparsers)
     _add_chat_parser(subparsers)
     _add_serve_parser(subparsers)
+    _add_eval_parser(subparsers)
     subparsers.add_parser("tools", help="列出内置工具及其参数 schema")
     _add_sessions_parser(subparsers)
 
@@ -562,6 +563,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         db_path = Path(args.db) if args.db else Path(DEFAULT_DB)
         return chat(args, db_path=db_path)
 
+    if args.command == "eval":
+        return run_eval(args)
+
     if args.command == "serve":
         db_path = Path(args.db) if args.db else Path(DEFAULT_DB)
         return serve(args, db_path=db_path)
@@ -582,3 +586,143 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
+
+# ---------------------------------------------------------------- 评测
+
+
+def _add_eval_parser(subparsers: argparse._SubParsersAction) -> None:
+    ev = subparsers.add_parser("eval", help="跑评测套件并出报告")
+    ev.add_argument("suite", help="套件路径（.jsonl 文件或目录）")
+    ev.add_argument("-n", "--trials", type=int, default=1, help="每个用例重复几次（默认 1）")
+    ev.add_argument(
+        "--mode",
+        choices=["hermetic", "live", "both"],
+        default="live",
+        help="hermetic 用假模型回放（不花钱，验证评测框架本身）；live 真实调用",
+    )
+    ev.add_argument("-c", "--concurrency", type=int, default=3, help="并发数（默认 3）")
+    ev.add_argument("--out", default="eval_reports", help="报告输出目录")
+    ev.add_argument("--tag", action="append", default=None, help="只跑带这个标签的用例")
+    ev.add_argument("--case", action="append", default=None, help="只跑指定 id 的用例")
+    ev.add_argument("--keep-workspaces", action="store_true", help="保留工作区便于排查")
+    _add_common_options(ev)
+
+
+def run_eval(args: argparse.Namespace) -> int:
+    """跑评测。这是唯一会真花钱的命令，所以费用相关信息都摆在明面上。"""
+    from ..evaluation import EvalRunner, load_cases, write_report
+
+    cases = load_cases(args.suite)
+    if args.tag:
+        wanted = set(args.tag)
+        cases = [c for c in cases if wanted & set(c.tags)]
+    if args.case:
+        wanted_ids = set(args.case)
+        cases = [c for c in cases if c.id in wanted_ids]
+
+    if not cases:
+        print("没有匹配的用例", file=sys.stderr)
+        return 1
+
+    settings = load_settings(
+        model=args.model,
+        max_steps=args.max_steps,
+        workspace=Path(args.workspace) if args.workspace else None,
+    )
+    workspace_base = Path(args.workspace) if args.workspace else Path.cwd()
+    work_root = workspace_base / ".agentkit" / "eval"
+    out_dir = Path(args.out)
+    suite_name = Path(args.suite).stem
+
+    modes = ["hermetic", "live"] if args.mode == "both" else [args.mode]
+    exit_code = 0
+
+    for mode in modes:
+        runnable = [c for c in cases if mode == "live" or c.hermetic_ready]
+        skipped = len(cases) - len(runnable)
+        if not runnable:
+            print(f"[{mode}] 没有可跑的用例，跳过", file=sys.stderr)
+            continue
+
+        if mode == "live":
+            print(
+                f"[live] {len(runnable)} 个用例 × {args.trials} 次 = "
+                f"{len(runnable) * args.trials} 次真实调用，**会产生 API 费用**",
+                file=sys.stderr,
+            )
+        else:
+            print(f"[hermetic] {len(runnable)} 个用例（假模型回放，不消耗 API）")
+
+        runner = EvalRunner(
+            _factory_for(mode, settings, workspace_base),
+            trials=args.trials,
+            max_concurrency=args.concurrency,
+            work_root=work_root,
+            mode=mode,
+            keep_workspaces=args.keep_workspaces,
+        )
+
+        result = asyncio.run(runner.run(runnable, suite_name=suite_name))
+        md_path, json_path = write_report(result, out_dir)
+
+        print(render_summary(result))
+        if skipped:
+            print(f"  （跳过 {skipped} 个用例：没有 hermetic 脚本）")
+        print(f"\n报告: {md_path}    {json_path}")
+
+        if result.pass_pow_k() < 1.0 and mode == "hermetic":
+            # hermetic 跑不满分，说明要么脚本写错了，要么判据写错了——
+            # 两种都该修，不该带着一个红的基线继续
+            print("  ⚠️ hermetic 模式没有全过，先检查用例的脚本与判据", file=sys.stderr)
+            exit_code = 1
+
+    return exit_code
+
+
+def _factory_for(mode: str, settings, workspace_base: Path):
+    """给出「工作区 → agent」的工厂。两种模式的差别只在这里。"""
+    from ..evaluation.replay import build_from_script
+    from ..runtime.agent import build_agent
+    from ..tools.builtin import register_builtin_tools
+
+    if mode == "hermetic":
+
+        def hermetic(workspace: Path, case):
+            return Agent(
+                model=build_from_script(case.script),
+                tools=register_builtin_tools(groups=["fs", "search"]),
+                workspace=workspace,
+                name="eval-hermetic",
+                max_steps=settings.max_steps,
+                temperature=None,
+            )
+
+        return hermetic
+
+    def live(workspace: Path, case):
+        return build_agent(
+            settings,
+            workspace=workspace,
+            tool_groups=["fs", "search"],
+            approver=DenyApprover("评测环境不接审批通道"),
+        )
+
+    return live
+
+
+def render_summary(result) -> str:
+    """终端里的一行结论。完整数据在报告里。"""
+    k = result.trials
+    return (
+        f"\n  TSR {result.task_success_rate():.1%}"
+        f"   pass@{k} {result.pass_at_k():.1%}"
+        f"   pass^{k} {result.pass_pow_k():.1%}"
+        f"   工具准确率 {_pct(result.tool_call_accuracy())}"
+        f"   平均 {result.average_steps():.1f} 步"
+        f"   耗时 {result.duration_s:.1f}s"
+    )
+
+
+def _pct(value: float | None) -> str:
+    return "—" if value is None else f"{value:.1%}"

@@ -2,8 +2,26 @@
 
 从零实现的 Agent 开发框架。核心循环、工具层、记忆、评测、可观测性全部自研，不依赖 LangChain 等现成框架。
 
-> **状态**：Phase 3 完成 —— 内核、流式、取消、预算、审批、工作记忆、可观测性、
-> HTTP 服务与 Web 控制台均已实现。评测见路线图。
+> **状态**：全部阶段完成 —— 内核、流式、取消、预算、审批、记忆、可观测性、
+> HTTP 服务、Web 控制台、Agent 发现与评测。
+
+## 评测数字
+
+`uv run agentkit eval eval_suites --mode live --trials 5` —— 22 个用例 × 5 次
+= 110 次真实调用（`deepseek-flash`）：
+
+| 指标 | 值 |
+| --- | --- |
+| 任务成功率 / pass@5 / pass^5 | 100% / 100% / 100% |
+| 工具调用准确率 | 100% |
+| 平均步数 | 2.95 |
+| 延迟 P50 / P95 | 2932 ms / 4677 ms |
+| 每次成功成本 | 0.0008 CNY |
+
+**这个 100% 的正确读法是「基线可复现、零失败」，不是「agent 完美」。**
+22 个用例对当前模型偏容易，不具区分度。完整的诚实解读、以及评测过程中暴露出的
+**我自己的判据错了五次**的记录，见 [docs/evaluation-notes.md](docs/evaluation-notes.md)——
+那份文档比这里的数字更有价值。
 
 ## 设计取舍
 
@@ -26,6 +44,8 @@
 | 记忆**只做工作记忆 + 持久化** | 语义记忆/情节记忆需要嵌入模型与向量库，且缺乏可接受的评测方式。取舍与后续路径写在 [docs/memory-design.md](docs/memory-design.md) |
 | 可观测性是事件流的**消费者**，不往引擎里埋点 | 埋点式的成对调用迟早会漏掉一处（返回值没接住、异常分支没关），trace 里就出现永不结束的 span。作为消费者，追踪逻辑还能脱离引擎单独测试 |
 | A2A 只做**卡片 + 注册发现** | 签名卡片与 JSON-RPC 服务端是协议一致性工作，不是能力工作，且在控制台里展示不出来。取舍见 [docs/a2a-scope.md](docs/a2a-scope.md) |
+| 评测判据**优先用正面事实**，避免 `answer_not_contains` | 负面判据检查的是措辞不是事实，会惩罚正确回答。第一版判据连错五次，记录在 [docs/evaluation-notes.md](docs/evaluation-notes.md) |
+| 评测**分 hermetic / live 两层** | hermetic 用假模型回放，验证评测框架自身（CI 可跑、零成本）；agent 的真实能力只能在 live 模式测 |
 
 ## 快速开始
 
@@ -47,6 +67,9 @@ uv run agentkit chat                                # 交互式对话
 uv run agentkit serve                               # 起 HTTP 服务 + Web 控制台
 uv run agentkit sessions list                       # 查看历史会话
 uv run agentkit tools                               # 列出工具及其参数 schema
+
+uv run agentkit eval eval_suites --mode hermetic    # 评测框架自检，不花钱
+uv run agentkit eval eval_suites --mode live -n 5   # 真实评测，会产生费用
 ```
 
 起服务后：
@@ -70,7 +93,7 @@ src/agentkit/
 ├── runtime/    # 引擎循环、事件总线、预算、取消、审批
 ├── observability/  # span 树与导出（对齐 OTel GenAI 约定）
 ├── discovery/  # AgentCard 注册与发现（对齐 A2A）
-├── evaluation/ # 评测数据集、指标、运行器      （Phase 4）
+├── evaluation/ # 评测数据集、判据、指标、运行器、报告
 └── app/        # CLI、HTTP 服务（SSE）与 Web 控制台
 ```
 
@@ -82,7 +105,8 @@ src/agentkit/
 - [x] **Phase 1** 自研内核 + 原生 tool calling + CLI
 - [x] **Phase 2** 流式、工具策略与异步审批、预算、取消、工作记忆
 - [x] **Phase 3** 可观测性（`gen_ai.*` span）+ FastAPI SSE 服务 + Web 控制台 + Agent 发现
-- [ ] **Phase 4** 评测：任务成功率 / 工具正确性 / pass^k / 成本
+- [x] **Phase 4** 评测：任务成功率 / 工具正确性 / pass^k / 成本
+- [ ] **Phase 5** 文档、ADR、压测数据
 - [ ] **Phase 5** 文档、ADR、压测数据
 
 ## 开发
