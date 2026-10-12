@@ -94,6 +94,18 @@ class TestRunLifecycle:
     def test_empty_prompt_is_rejected(self, client: TestClient):
         assert client.post("/runs", json={"prompt": ""}).status_code == 422
 
+    def test_events_carry_the_run_id_from_post(self, client: TestClient):
+        """``POST /runs`` 返回的 run_id 必须就是事件上盖的那个。
+
+        客户端拿返回的 id 去订阅 SSE、查 trace；如果引擎另生成一个 id，
+        事件和 trace 就再也关联不回这个 id 了。
+        """
+        run_id = client.post("/runs", json={"prompt": "你好"}).json()["run_id"]
+        events = _events(client, run_id)
+
+        assert events, "应该收到事件"
+        assert {event["run_id"] for event in events} == {run_id}
+
 
 class TestSSEFormat:
     def test_frames_carry_id_and_event_name(self, client: TestClient):
@@ -445,3 +457,18 @@ class TestConsole:
 
         # 确认确实使用 textContent 渲染，否则上述检查可能仅因未实现任何渲染而通过
         assert html.count("textContent") > 10
+
+    def test_console_listens_to_named_sse_events(self):
+        """控制台必须逐事件类型 ``addEventListener``，不能只用 ``onmessage``。
+
+        服务端每条 SSE 帧都带 ``event: <type>`` 行（见 ``_format_sse``），属**具名
+        事件**；而 ``EventSource.onmessage`` 只接收默认的 ``message`` 类型，具名事件
+        一条都收不到。退回 ``onmessage`` 的症状是：界面永远停在「运行中」。
+        """
+        html = (
+            Path(__file__).resolve().parent.parent
+            / "src" / "agentkit" / "app" / "web" / "index.html"
+        ).read_text(encoding="utf-8")
+
+        assert "addEventListener" in html
+        assert ".onmessage" not in html

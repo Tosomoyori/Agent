@@ -337,6 +337,25 @@
 
   // ---- 事件分发 ----
 
+  // 与 agentkit/core/events.py 的 RunEvent 联合类型一一对应。
+  // 后端把每个类型当作 SSE 的**具名事件**发送（``event: <type>`` 行，见 api.py
+  // 的 _format_sse），所以这份清单有两个用途：注册 EventSource 监听，
+  // 以及作为 handle() 的判别依据。两边增删事件类型时必须同步。
+  const EVENT_TYPES = [
+    "run_started",
+    "step_started",
+    "reasoning_delta",
+    "text_delta",
+    "tool_call_started",
+    "tool_result",
+    "approval_requested",
+    "approval_resolved",
+    "usage_reported",
+    "run_completed",
+    "run_failed",
+    "run_cancelled",
+  ];
+
   function handle(event) {
     lastSeq = Math.max(lastSeq, event.seq || 0);
     switch (event.type) {
@@ -468,8 +487,16 @@
 
     // 浏览器原生 EventSource：断线会自动重连，并把 Last-Event-ID 带回来。
     // 服务端据此续传（见 api.py 的 _format_sse）。
+    //
+    // 必须逐类型 addEventListener，**不能**用 onmessage：后端每条帧都带
+    // ``event: <type>`` 行，属具名事件；onmessage 只接收默认的 ``message``
+    // 类型，具名事件一条都收不到——症状就是点了运行之后界面永远停在「运行中」。
     source = new EventSource(`/runs/${id}/events`);
-    source.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch {} };
+    EVENT_TYPES.forEach((type) => {
+      source.addEventListener(type, (e) => {
+        try { handle(JSON.parse(e.data)); } catch {}
+      });
+    });
     source.onerror = () => {
       // 事件流结束后 EventSource 也会报 error，此时不该重试
       if (source && source.readyState === EventSource.CLOSED) source = null;

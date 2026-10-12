@@ -208,6 +208,10 @@ class RunManager:
         try:
             stream = self.agent.stream(
                 prompt,
+                # 传进去，别让引擎自己再生成一个：POST /runs 返回的 run_id 就是
+                # 客户端后面订阅 SSE、查 trace 用的那个 id，事件与 trace 上盖的
+                # 必须是同一个，否则两者无法关联。
+                run_id=state.run_id,
                 session_id=session_id,
                 cancellation=state.cancellation,
                 approver=state.approver,
