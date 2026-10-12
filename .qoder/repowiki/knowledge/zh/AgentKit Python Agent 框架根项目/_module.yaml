@@ -1,0 +1,14 @@
+schema_version: 1
+module_path: ""
+title: AgentKit Python Agent 框架根项目
+scope:
+    - README.md
+    - pyproject.toml
+    - uv.lock
+    - .gitignore
+    - .gitattributes
+    - .env.example
+    - .python-version
+source_files: []
+depends_on: []
+related_to: []

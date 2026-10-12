@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: integrations
+title: LangChain 双向适配层
+scope:
+    - src/agentkit/integrations/
+    - examples/langchain_interop.py
+source_files: []
+depends_on: []
+related_to: []

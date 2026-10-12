@@ -1,0 +1,43 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-10-05T06:53:33Z"
+modules:
+    "":
+        dir_name: AgentKit Python Agent 框架根项目
+        title: AgentKit Python Agent 框架根项目
+        scope:
+            - README.md
+            - pyproject.toml
+            - uv.lock
+            - .gitignore
+            - .gitattributes
+            - .env.example
+            - .python-version
+        source_files: []
+        children:
+            - integrations
+            - tests
+        depends_on: []
+        related_to: []
+    integrations:
+        dir_name: LangChain 双向适配层
+        title: LangChain 双向适配层
+        scope:
+            - src/agentkit/integrations/
+            - examples/langchain_interop.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    tests:
+        dir_name: AgentKit 测试套件
+        title: AgentKit 测试套件
+        scope:
+            - tests/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
